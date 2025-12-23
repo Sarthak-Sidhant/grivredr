@@ -1,0 +1,23 @@
+{
+  "ranchi": {
+    "name": "Ranchi Municipal Corporation",
+    "websites": [
+      {
+        "url": "https://www.ranchimunicipal.com/",
+        "type": "main_portal",
+        "description": "Main Ranchi Municipal website"
+      },
+      {
+        "url": "https://smartranchi.in/Portal/View/ComplaintRegistration.aspx?m=Online",
+        "type": "complaint_form",
+        "description": "Smart Ranchi complaint registration"
+      },
+      {
+        "url": "https://jharkhandegovernance.com/grievance/main",
+        "type": "state_grievance",
+        "description": "Jharkhand e-Governance grievance portal"
+      }
+    ],
+    "generated_scrapers": []
+  }
+}
