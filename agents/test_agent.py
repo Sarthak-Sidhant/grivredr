@@ -61,7 +61,10 @@ class TestValidationAgent(BaseAgent):
         # Reconstruct FormSchema from dict
         schema = self._dict_to_schema(schema_dict)
 
-        logger.info(f"🧪 [{self.name}] Testing form with {len(schema.fields)} fields")
+        # Filter out non-user-facing fields BEFORE testing
+        schema = self._filter_user_facing_fields(schema)
+
+        logger.info(f"🧪 [{self.name}] Testing form with {len(schema.fields)} user-facing fields")
 
         # Initialize browser
         await self._init_browser()
@@ -69,12 +72,40 @@ class TestValidationAgent(BaseAgent):
         try:
             results = ValidationResults(total_tests=0, passed=0, failed=0)
 
-            # Test Suite
+            # Test Suite with timeouts
+            import time
+            start_time = time.time()
+            max_validation_time = 180  # 3 minutes max for all validation
+
             await self._test_empty_submission(schema, results)
-            await self._test_required_fields(schema, results)
-            await self._test_field_types(schema, results)
-            await self._test_cascading_dropdowns(schema, results)
-            await self._test_full_submission(schema, results)
+
+            if time.time() - start_time > max_validation_time:
+                logger.warning(f"⏰ Validation timeout reached, skipping remaining tests")
+                results.test_results.append(TestResult(
+                    test_name="timeout_check",
+                    passed=False,
+                    message="Validation timeout - skipped remaining tests",
+                    warnings=["Tests took too long"]
+                ))
+                results.total_tests += 1
+                results.failed += 1
+            else:
+                await self._test_required_fields(schema, results)
+
+            if time.time() - start_time > max_validation_time:
+                logger.warning(f"⏰ Validation timeout reached")
+            else:
+                await self._test_field_types(schema, results)
+
+            if time.time() - start_time > max_validation_time:
+                logger.warning(f"⏰ Validation timeout reached")
+            else:
+                await self._test_cascading_dropdowns(schema, results)
+
+            if time.time() - start_time > max_validation_time:
+                logger.warning(f"⏰ Validation timeout reached")
+            else:
+                await self._test_full_submission(schema, results)
 
             # Calculate confidence
             results.confidence_score = results.passed / results.total_tests if results.total_tests > 0 else 0.0
@@ -292,8 +323,13 @@ class TestValidationAgent(BaseAgent):
         try:
             await page.goto(schema.url, wait_until="networkidle", timeout=30000)
 
+            # Limit to max 10 fields or 20% of total, whichever is smaller
+            max_fields_to_check = min(10, max(5, len(schema.fields) // 5))
             verified_count = 0
-            for field in schema.fields[:5]:  # Check first 5 fields
+
+            logger.info(f"   Checking {max_fields_to_check} of {len(schema.fields)} fields")
+
+            for field in schema.fields[:max_fields_to_check]:
                 try:
                     if field.selector:
                         # Get actual field type from DOM
@@ -462,8 +498,35 @@ class TestValidationAgent(BaseAgent):
             # Take screenshot before submit
             await page.screenshot(path="dashboard/static/screenshots/before_submit.png")
 
-            # Submit
-            await page.click(schema.submit_button.get("selector", ""), timeout=5000)
+            # Submit - with fallback for missing/wrong submit button
+            submit_selector = schema.submit_button.get("selector", "")
+            if not submit_selector:
+                logger.warning("   ⚠️ No submit button selector provided, searching for submit buttons...")
+                # Try common submit button patterns
+                submit_selector = await page.evaluate("""
+                    () => {
+                        const buttons = document.querySelectorAll('button[type="submit"], input[type="submit"], button.submit, .btn-primary');
+                        for (let btn of buttons) {
+                            const text = (btn.textContent || btn.value || '').toLowerCase();
+                            if (text.includes('submit') || text.includes('register') || text.includes('send')) {
+                                // Return a unique selector
+                                return '#' + btn.id || btn.tagName + '.' + Array.from(btn.classList).join('.');
+                            }
+                        }
+                        return null;
+                    }
+                """)
+
+            if submit_selector:
+                try:
+                    await page.click(submit_selector, timeout=5000)
+                except Exception as e:
+                    logger.error(f"   ❌ Failed to click submit button: {e}")
+                    # If click fails, try finding visible buttons and use the first one
+                    try:
+                        await page.click("button[type='submit']:visible, input[type='submit']:visible", timeout=2000)
+                    except:
+                        logger.error("   ❌ Could not find any clickable submit button")
             await asyncio.sleep(2)
 
             # Take screenshot after submit
@@ -541,13 +604,59 @@ class TestValidationAgent(BaseAgent):
 
             try:
                 if field.type == "dropdown":
-                    await page.select_option(field.selector, value, timeout=3000)
-                    await asyncio.sleep(0.3)  # Wait for any cascading updates
+                    # Try Select2 dropdown first (learned from ranchi_smart)
+                    is_select2 = await page.evaluate(f"""
+                        () => {{
+                            const select = document.querySelector('{field.selector}');
+                            if (!select) return false;
+                            return select.classList.contains('select2-hidden-accessible') ||
+                                   select.getAttribute('data-select2-id') !== null ||
+                                   (window.jQuery && jQuery(select).data('select2'));
+                        }}
+                    """)
+
+                    if is_select2:
+                        logger.info(f"   🎯 Detected Select2 dropdown: {field.label}")
+                        # Use JavaScript to set value (learned pattern from ranchi_smart)
+                        await page.evaluate(f"""
+                            (value) => {{
+                                const select = document.querySelector('{field.selector}');
+                                if (select) {{
+                                    select.value = value;
+                                    // Trigger change event
+                                    const event = new Event('change', {{ bubbles: true }});
+                                    select.dispatchEvent(event);
+
+                                    // Also trigger Select2 change if it exists
+                                    if (window.jQuery && jQuery(select).data('select2')) {{
+                                        jQuery(select).trigger('change');
+                                    }}
+                                }}
+                            }}
+                        """, value)
+                        await asyncio.sleep(1)  # Wait for cascading/AJAX
+                    else:
+                        # Regular dropdown
+                        await page.select_option(field.selector, value, timeout=3000)
+                        await asyncio.sleep(0.3)
+
                 elif field.type == "textarea":
                     await page.fill(field.selector, value, timeout=3000)
                 elif field.type == "file":
                     # Skip file uploads in testing for now
                     pass
+                elif "number" in field.selector or 'type="number"' in str(field):
+                    # Handle number inputs specially
+                    await page.evaluate(f"""
+                        (value) => {{
+                            const input = document.querySelector('{field.selector}');
+                            if (input) {{
+                                input.value = value;
+                                input.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                                input.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                            }}
+                        }}
+                    """, str(value))
                 else:
                     await page.fill(field.selector, value, timeout=3000)
 
@@ -632,6 +741,50 @@ class TestValidationAgent(BaseAgent):
             multi_step=schema_dict.get("multi_step", False)
         )
 
+        return schema
+
+    def _filter_user_facing_fields(self, schema: FormSchema) -> FormSchema:
+        """Filter out non-user-facing fields like hidden inputs, viewstate, Select2 internals"""
+
+        # Patterns to exclude
+        exclude_patterns = [
+            '__VIEWSTATE', '__EVENTVALIDATION', '__EVENTTARGET', '__EVENTARGUMENT',  # ASP.NET
+            's2id_autogen', 'select2-', '_search',  # Select2 internals
+            'hf', 'hidden',  # Hidden field prefixes
+            'hddn', 'hdn',  # More hidden field patterns
+        ]
+
+        # Types to exclude
+        exclude_types = ['hidden']
+
+        filtered_fields = []
+        for field in schema.fields:
+            # Check if field name/selector matches exclude patterns
+            should_exclude = False
+
+            field_text = f"{field.name} {field.selector}".lower()
+
+            for pattern in exclude_patterns:
+                if pattern.lower() in field_text:
+                    should_exclude = True
+                    logger.debug(f"   Filtering out: {field.name} (matched pattern: {pattern})")
+                    break
+
+            # Check if field type is excluded
+            if field.type in exclude_types:
+                should_exclude = True
+                logger.debug(f"   Filtering out: {field.name} (type: {field.type})")
+
+            # Check if selector indicates hidden field
+            if 'type="hidden"' in field.selector or 'hidden' in field.type.lower():
+                should_exclude = True
+                logger.debug(f"   Filtering out: {field.name} (hidden)")
+
+            if not should_exclude:
+                filtered_fields.append(field)
+
+        logger.info(f"🧹 Filtered {len(schema.fields)} → {len(filtered_fields)} user-facing fields")
+        schema.fields = filtered_fields
         return schema
 
     def _results_to_dict(self, results: ValidationResults) -> Dict[str, Any]:

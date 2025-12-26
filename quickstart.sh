@@ -14,41 +14,73 @@ fi
 echo "✅ Python 3 found: $(python3 --version)"
 echo ""
 
+# Check if .env exists
+if [ ! -f .env ]; then
+    echo "⚠️  No .env file found!"
+    echo ""
+    echo "Creating .env from template..."
+    cp .env.example .env
+    echo ""
+    echo "📝 Please edit .env and add your MegaLLM API key:"
+    echo "   api_key=your_megallm_api_key_here"
+    echo ""
+    echo "Get your key from: https://app.mega-llm.com"
+    echo ""
+    read -p "Press Enter after you've updated .env..."
+fi
+
 # Check if dependencies are installed
 echo "📦 Checking dependencies..."
-if python3 -c "import fastapi" 2>/dev/null; then
+if python3 -c "import playwright" 2>/dev/null; then
     echo "✅ Dependencies already installed"
 else
     echo "📥 Installing dependencies..."
-    python3 -m pip install --user -r requirements.txt -q
+    python3 -m pip install --user -r requirements.txt
+    echo ""
+    echo "📥 Installing Playwright browsers..."
     python3 -m playwright install chromium
 fi
 
 echo ""
-echo "🧪 Testing AI connection..."
-python3 test_ai_client.py
+echo "🔍 Verifying setup..."
+python3 verify_setup.py
 
 if [ $? -eq 0 ]; then
     echo ""
     echo "=================================================="
-    echo "✅ System Ready!"
-    echo "=================================================="
-    echo ""
-    echo "Next steps:"
-    echo ""
-    echo "1️⃣  Learn Ranchi websites (generates scrapers):"
-    echo "   python3 learn_ranchi.py"
-    echo ""
-    echo "2️⃣  Test generated scrapers:"
-    echo "   python3 test_scrapers.py"
-    echo ""
-    echo "3️⃣  Start API server:"
-    echo "   python3 main.py"
-    echo ""
-    echo "📖 Full documentation: README.md and USAGE_GUIDE.md"
+    echo "✅ Setup Complete! System Ready!"
     echo "=================================================="
 else
     echo ""
-    echo "❌ AI connection failed. Check your .env file."
-    echo "Expected: api_key=sk-mega-..."
+    echo "=================================================="
+    echo "⚠️  Setup verification failed"
+    echo "=================================================="
+    exit 1
 fi
+echo ""
+echo "Quick Start Commands:"
+echo ""
+echo "1️⃣  Train a new portal (example: Abua Sathi):"
+echo "   python3 cli/train_cli.py abua_sathi --district ranchi"
+echo ""
+echo "2️⃣  Test a generated scraper:"
+echo "   python3 tests/test_abua_sathi_live.py"
+echo ""
+echo "3️⃣  Check what was discovered:"
+echo "   python3 scripts/check_discovery_results.py"
+echo ""
+echo "4️⃣  View training results:"
+echo "   ls data/training_sessions/"
+echo ""
+echo "📖 Documentation:"
+echo "   • README.md - Full guide"
+echo "   • docs/QUICK_START.md - Detailed quick start"
+echo "   • docs/STATUS.md - Current features"
+echo ""
+echo "💡 Tips:"
+echo "   • Training takes 2-3 minutes per portal"
+echo "   • Costs ~$0.12 per portal (one-time)"
+echo "   • Generated scrapers run for free forever"
+echo "   • Use --headless flag to hide browser"
+echo ""
+echo "=================================================="

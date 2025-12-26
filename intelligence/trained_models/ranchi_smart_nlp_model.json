@@ -1,0 +1,209 @@
+{
+  "municipality": "ranchi_smart",
+  "mapping_rules": {
+    "fields": {
+      "problem": {
+        "keywords": [
+          "dumping",
+          "dung",
+          "cow",
+          "advertisement",
+          "tax",
+          "pollution",
+          "air",
+          "application",
+          "working",
+          "holding",
+          "trade",
+          "number",
+          "generated",
+          "corporation",
+          "public",
+          "places"
+        ],
+        "synonyms": {
+          "dumping of cow dung in public places": [
+            "cow dung dumping",
+            "dung on road",
+            "cattle waste",
+            "animal waste dumping",
+            "gobar dumping",
+            "cow waste public area"
+          ],
+          "advertisement in corporation area without paying advertisement tax": [
+            "illegal advertisement",
+            "unpaid ad tax",
+            "banner without tax",
+            "hoarding tax not paid",
+            "unauthorized advertisement",
+            "ad tax evasion"
+          ],
+          "air pollution": [
+            "smoke pollution",
+            "bad air quality",
+            "factory smoke",
+            "vehicle pollution",
+            "dust pollution",
+            "air quality issue"
+          ],
+          "application is not working": [
+            "app not working",
+            "app crash",
+            "application error",
+            "system not working",
+            "portal down",
+            "website not working",
+            "app issue"
+          ],
+          "applied but holding or trade number not generated": [
+            "holding number pending",
+            "trade number not received",
+            "application pending",
+            "number not allotted",
+            "waiting for holding number",
+            "trade license number missing"
+          ]
+        },
+        "categories": {
+          "sanitation_waste": [
+            "dumping of cow dung in public places",
+            "dumping dung public places"
+          ],
+          "tax_revenue": [
+            "advertisement in corporation area without paying advertisement tax",
+            "advertisement in corporation area without paying advertisement tax.",
+            "advertisement corporation area without paying advertisement"
+          ],
+          "environment": [
+            "air pollution"
+          ],
+          "technical_issues": [
+            "application is not working",
+            "application working"
+          ],
+          "registration_licensing": [
+            "applied but holding or trade number not generated",
+            "applied holding trade number generated"
+          ]
+        },
+        "fuzzy_threshold": 0.7,
+        "mapping_strategy": "Match user complaint against problem categories first, then use keyword extraction to identify specific issue. Remove common stop words and match remaining keywords. Handle variations like with/without punctuation, abbreviated forms. Prioritize exact phrase matches, then fall back to keyword overlap scoring.",
+        "normalization_rules": [
+          "remove trailing punctuation",
+          "lowercase all text",
+          "remove articles (a, an, the)",
+          "handle common abbreviations (advt->advertisement, corp->corporation)",
+          "remove filler words (is, not, but, or)"
+        ]
+      },
+      "wardforarea": {
+        "keywords": [
+          "colony",
+          "nagar",
+          "vihar",
+          "school",
+          "quarter",
+          "type",
+          "academy",
+          "ranchi",
+          "purani",
+          "sainik",
+          "judicial",
+          "millat",
+          "prabhat",
+          "aadarsh",
+          "anand"
+        ],
+        "synonyms": {
+          "purani ranchi": [
+            "old ranchi",
+            "purana ranchi",
+            "old city ranchi"
+          ],
+          "sainik school": [
+            "military school",
+            "sainik vidyalaya",
+            "army school area"
+          ],
+          "judicial academy": [
+            "court academy",
+            "judiciary training",
+            "judicial training center"
+          ],
+          "a type quarter": [
+            "type a quarter",
+            "a-type quarter",
+            "government quarter type a"
+          ],
+          "type quarter": [
+            "govt quarter",
+            "government quarter",
+            "sarkari quarter"
+          ],
+          "aadarsh nagar": [
+            "adarsh nagar",
+            "adarsh colony",
+            "aadarsh colony"
+          ],
+          "anand vihar colony": [
+            "anand vihar",
+            "anandvihar",
+            "anand bihar"
+          ],
+          "millat colony": [
+            "millat nagar",
+            "milat colony"
+          ]
+        },
+        "categories": {
+          "residential_colonies": [
+            "anand vihar colony",
+            "millat colony",
+            "aadarsh nagar"
+          ],
+          "educational_institutions": [
+            "judicial academy",
+            "prabhat tara high school",
+            "sainik school"
+          ],
+          "government_quarters": [
+            "a type quarter",
+            "type quarter"
+          ],
+          "old_city_areas": [
+            "purani ranchi"
+          ],
+          "unknown_other": [
+            "other"
+          ]
+        },
+        "fuzzy_threshold": 0.75,
+        "mapping_strategy": "Extract location/area name from user input. Handle Hindi-English transliteration variations (purani/purana, nagar/colony). Match against known area patterns (X colony, X nagar, X vihar). Use higher fuzzy threshold due to importance of location accuracy. Default to 'other' (-1) if confidence is below threshold.",
+        "normalization_rules": [
+          "handle transliteration variants (aa->a, ee->i)",
+          "normalize common suffixes (colony, nagar, vihar, mohalla)",
+          "remove directional prefixes (north, south, east, west)",
+          "handle compound words (anandvihar -> anand vihar)"
+        ],
+        "special_mappings": {
+          "unknown": -1,
+          "not_listed": -1,
+          "other_area": -1,
+          "cant_find": -1
+        }
+      }
+    },
+    "global_rules": {
+      "preprocessing": [
+        "convert to lowercase",
+        "remove extra whitespace",
+        "remove special characters except hyphen",
+        "trim leading/trailing spaces"
+      ],
+      "fallback_strategy": "If no match found above threshold, return top 3 candidates with confidence scores for user selection",
+      "duplicate_handling": "Options with same ID but different text variations should be treated as equivalent matches"
+    },
+    "confidence_score": 0.72
+  },
+  "training_cost": 0.0
+}

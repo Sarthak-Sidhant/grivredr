@@ -7,13 +7,15 @@ from openai import OpenAI
 from dotenv import load_dotenv
 from typing import Optional, List, Dict, Any
 
+from utils.ai_cache import AICache
+
 load_dotenv()
 
 
 class AIClient:
     """Unified AI client for Claude models via MegaLLM"""
 
-    def __init__(self):
+    def __init__(self, enable_cache: bool = True):
         self.client = OpenAI(
             base_url="https://ai.megallm.io/v1",
             api_key=os.getenv("api_key")
@@ -26,6 +28,10 @@ class AIClient:
             "powerful": "claude-opus-4-5-20251101",  # $5/$25 - Complex reasoning
         }
 
+        # AI call caching for cost optimization
+        self.enable_cache = enable_cache
+        self.cache = AICache() if enable_cache else None
+
     def analyze_website_structure(
         self,
         screenshot_base64: str,
@@ -36,19 +42,8 @@ class AIClient:
         Analyze website structure using Claude Vision
         Returns form fields, navigation steps, and structure info
         """
-        messages = [
-            {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "image_url",
-                        "image_url": {
-                            "url": f"data:image/png;base64,{screenshot_base64}"
-                        }
-                    },
-                    {
-                        "type": "text",
-                        "text": f"""Analyze this grievance/complaint form webpage from {url}.
+        # Check cache first
+        prompt = f"""Analyze this grievance/complaint form webpage from {url}.
 
 Your task:
 1. Identify ALL form fields (input, textarea, select, file upload, etc.)
@@ -77,6 +72,30 @@ Provide response in this JSON format:
 
 {f"HTML Context: {html_snippet}" if html_snippet else ""}
 """
+
+        if self.cache:
+            cached_response = self.cache.get(
+                prompt=prompt,
+                model=self.models["balanced"],
+                image_data=screenshot_base64
+            )
+            if cached_response:
+                return cached_response
+
+        # Cache miss - make AI call
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:image/png;base64,{screenshot_base64}"
+                        }
+                    },
+                    {
+                        "type": "text",
+                        "text": prompt
                     }
                 ]
             }
@@ -89,7 +108,19 @@ Provide response in this JSON format:
             max_tokens=4000
         )
 
-        return response.choices[0].message.content
+        result = response.choices[0].message.content
+
+        # Store in cache
+        if self.cache:
+            self.cache.set(
+                prompt=prompt,
+                model=self.models["balanced"],
+                response=result,
+                ttl_hours=24,
+                image_data=screenshot_base64
+            )
+
+        return result
 
     def generate_scraper_code(
         self,
@@ -108,25 +139,73 @@ Municipality: {municipality_name}
 Website Analysis:
 {website_analysis}
 
+**MANDATORY DEFENSIVE CODING PATTERNS:**
+
+1. **Error Handling:**
+   - Wrap ALL Playwright operations in try-except blocks
+   - Implement exponential backoff for retries (max 3 attempts)
+   - Log detailed error context (selector tried, page state, screenshot)
+   - NEVER silently fail - always raise or log errors
+
+2. **Robustness Patterns:**
+   - Use explicit waits (page.wait_for_selector) NOT time.sleep()
+   - Check element visibility AND interactability before interaction
+   - Handle stale element exceptions by refetching the element
+   - Validate data types and values before submission
+
+3. **Dynamic Content Handling:**
+   - For AJAX dropdowns: select parent → wait 1-2s → verify child options loaded
+   - For conditional fields: check if field exists before attempting interaction
+   - For multi-step forms: verify page transition completed before proceeding
+
+4. **Selector Fallbacks:**
+   Every element interaction must have fallback selectors:
+   ```python
+   # GOOD - Multiple fallback strategies:
+   element = await page.query_selector("#name") or \
+             await page.query_selector("[name='name']") or \
+             await page.query_selector("input[placeholder*='name' i]")
+
+   # BAD - Single point of failure:
+   element = await page.query_selector("#name")
+   ```
+
+5. **Test Mode Support:**
+   - Include async def run_test_mode(self, test_data: dict) -> dict
+   - In test mode: validate field presence but DON'T submit
+   - Return structured test results with field coverage
+
+6. **Structured Error Responses:**
+   ```python
+   return {{
+       "success": False,
+       "error": "Could not find submit button",
+       "attempted_selectors": ["#submit", "button[type='submit']"],
+       "page_html": page_html[:500],  # For debugging
+       "screenshot": screenshot_path
+   }}
+   ```
+
 Generate a complete Python class that:
 1. Uses Playwright async API
-2. Handles navigation and waits intelligently
-3. Fills all identified form fields from a data dictionary
+2. Handles navigation and waits intelligently with EXPLICIT WAITS
+3. Fills all identified form fields with FALLBACK SELECTORS
 4. Handles file uploads if present
 5. Submits the form and captures success/error messages
 6. Takes screenshots at each step for debugging
 7. Returns structured result (success, tracking_id, screenshots, errors)
-8. Has proper error handling and retries
+8. Has COMPREHENSIVE error handling and retries
 
 Requirements:
 - Class name: {municipality_name.title().replace(' ', '')}Scraper
 - Method: async def submit_grievance(self, data: dict) -> dict
+- Include: async def run_test_mode(self, test_data: dict) -> dict
 - Input data format: {{"name": "...", "phone": "...", "complaint": "...", "category": "...", "file_path": "..."}}
 - Use headless=False for debugging, make it configurable
 - Add stealth mode to avoid detection
 - Log all actions for debugging
 
-Return ONLY the Python code, no explanations. Make it production-ready.
+Return ONLY the Python code, no explanations. Make it production-ready with DEFENSIVE patterns.
 """
 
         response = self.client.chat.completions.create(
@@ -230,6 +309,31 @@ Return JSON:
         )
 
         return response.choices[0].message.content
+
+    def get_cache_stats(self) -> Dict[str, Any]:
+        """
+        Get AI cache statistics
+
+        Returns:
+            Cache stats including hit rate and cost savings
+        """
+        if not self.cache:
+            return {"cache_enabled": False}
+
+        stats = self.cache.get_stats()
+        savings = self.cache.estimate_cost_savings(avg_cost_per_call=0.05)
+
+        return {
+            "cache_enabled": True,
+            **stats,
+            "cost_savings": savings
+        }
+
+    def clear_cache(self):
+        """Clear AI cache"""
+        if self.cache:
+            return self.cache.clear_all()
+        return 0
 
 
 # Singleton instance

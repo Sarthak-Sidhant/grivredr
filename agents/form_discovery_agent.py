@@ -13,6 +13,7 @@ from playwright.async_api import async_playwright, Page, Browser
 
 from agents.base_agent import BaseAgent, cost_tracker
 from config.ai_client import ai_client
+from utils.js_runtime_monitor import JSRuntimeMonitor
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -58,13 +59,16 @@ class FormDiscoveryAgent(BaseAgent):
     Agent that discovers form structure through iterative exploration
     """
 
-    def __init__(self, headless: bool = False):
+    def __init__(self, headless: bool = False, enable_js_monitoring: bool = True):
         super().__init__(name="FormDiscoveryAgent", max_attempts=3)
         self.headless = headless
+        self.enable_js_monitoring = enable_js_monitoring
         self.browser: Optional[Browser] = None
         self.playwright = None
-        self.screenshots_dir = Path("dashboard/static/screenshots")
+        self.screenshots_dir = Path("outputs/screenshots")
         self.screenshots_dir.mkdir(parents=True, exist_ok=True)
+        self.js_monitor = JSRuntimeMonitor() if enable_js_monitoring else None
+        self.js_events = []
 
     async def _execute_attempt(self, task: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -85,10 +89,16 @@ class FormDiscoveryAgent(BaseAgent):
             if not visual_analysis["success"]:
                 return visual_analysis
 
-            # Phase 2: Interactive exploration
+            # Phase 2: Interactive exploration (with JS monitoring)
             interactive_analysis = await self._interactive_exploration_phase(
                 url, visual_analysis["initial_schema"], hints
             )
+
+            # Phase 2.5: Analyze captured JS events
+            if self.js_monitor and self.js_events:
+                js_analysis = self.js_monitor.analyze_events(self.js_events)
+                interactive_analysis["js_analysis"] = js_analysis
+                logger.info(f"📊 JS Analysis: {self.js_monitor.get_summary()}")
 
             # Phase 3: Validation discovery
             validation_analysis = await self._validation_discovery_phase(
@@ -244,6 +254,12 @@ Your task:
 6. Check for CAPTCHA
 7. Look for validation hints (e.g., "10 digits", "valid email")
 
+IMPORTANT for dropdowns:
+- Do NOT extract visible dropdown OPTIONS from the screenshot
+- The system will programmatically extract dropdown options later
+- Only identify that a dropdown EXISTS and its selector
+- Do NOT list the dropdown choices you see in the image
+
 HTML Context (first 5000 chars):
 {html_snippet}
 
@@ -348,16 +364,21 @@ Return detailed JSON:
             })
 
             for field_data in section.get("fields", []):
-                field = FormField(
-                    name=field_data.get("label", "").lower().replace(" ", "_"),
-                    label=field_data.get("label", ""),
-                    type=field_data.get("type", "text"),
-                    selector=field_data.get("selector", ""),
-                    required=field_data.get("required", False),
-                    placeholder=field_data.get("placeholder", ""),
-                    validation_pattern=field_data.get("validation_hint", "")
-                )
-                schema.fields.append(field)
+                # Ensure we have a specific selector (prefer ID)
+                selector = field_data.get("selector", "")
+
+                # If selector is too generic, skip it for now (will be found later by scroll_and_discover)
+                if selector and not any(generic in selector for generic in ['input[type=', 'select', 'textarea']):
+                    field = FormField(
+                        name=field_data.get("label", "").lower().replace(" ", "_"),
+                        label=field_data.get("label", ""),
+                        type=field_data.get("type", "text"),
+                        selector=selector,
+                        required=field_data.get("required", False),
+                        placeholder=field_data.get("placeholder", ""),
+                        validation_pattern=field_data.get("validation_hint", "")
+                    )
+                    schema.fields.append(field)
 
         schema.discovered_fields_count = len(schema.fields)
         schema.confidence_score = 0.5  # Initial confidence
@@ -384,6 +405,12 @@ Return detailed JSON:
             await page.goto(url, wait_until="networkidle", timeout=30000)
             await asyncio.sleep(1)
 
+            # Inject JS monitoring if enabled
+            if self.js_monitor:
+                logger.info(f"🔍 [{self.name}] Injecting JS runtime monitoring...")
+                await self.js_monitor.inject_monitoring(page)
+                await asyncio.sleep(0.5)
+
             # Explore dropdowns
             await self._explore_dropdowns(page, schema)
 
@@ -392,6 +419,16 @@ Return detailed JSON:
 
             # Detect cascading relationships
             await self._detect_cascading_fields(page, schema)
+
+            # Interact with form to trigger JS (if monitoring enabled)
+            if self.js_monitor:
+                logger.info(f"🖱️ [{self.name}] Interacting with form to trigger JS...")
+                await self.js_monitor.interact_with_form(page)
+                await asyncio.sleep(1)
+
+                # Capture events
+                self.js_events = await self.js_monitor.capture_events(page, timeout=2)
+                logger.info(f"✓ Captured {len(self.js_events)} JS events")
 
             schema.confidence_score += 0.2  # Boost confidence
 
@@ -404,56 +441,135 @@ Return detailed JSON:
             await context.close()
 
     async def _explore_dropdowns(self, page: Page, schema: FormSchema):
-        """Click dropdowns to see their options"""
+        """Click dropdowns to see their options - handles both standard and Select2 dropdowns"""
         for field in schema.fields:
             if field.type == "dropdown" and field.selector:
                 try:
-                    # Try to find the dropdown
-                    dropdown = page.locator(field.selector).first
-                    if await dropdown.count() > 0:
-                        logger.info(f"🔽 Exploring dropdown: {field.label}")
+                    logger.info(f"🔽 Exploring dropdown: {field.label}")
 
-                        # Click to open
-                        await dropdown.click(timeout=5000)
-                        await asyncio.sleep(0.5)
+                    # Skip language selectors and login dropdowns
+                    if any(skip in field.selector.lower() for skip in ['language', 'login', 'txtloginid']):
+                        logger.info(f"   Skipping {field.label} (appears to be non-form dropdown)")
+                        continue
 
-                        # Try to get options
-                        options = await page.evaluate(f"""
-                            () => {{
-                                const select = document.querySelector('{field.selector}');
-                                if (select && select.tagName === 'SELECT') {{
-                                    return Array.from(select.options).map(opt => opt.text);
-                                }}
-                                return [];
+                    # Try multiple strategies to extract options
+                    options = await page.evaluate(f"""
+                        (selector) => {{
+                            const select = document.querySelector(selector);
+                            if (!select) return [];
+
+                            // Strategy 1: Standard <select> element
+                            if (select.tagName === 'SELECT') {{
+                                const opts = Array.from(select.options).map(opt => ({{
+                                    text: opt.text.trim(),
+                                    value: opt.value
+                                }}));
+                                return opts.filter(o => o.text && o.text !== 'Please Select' && o.text !== 'Select');
                             }}
-                        """)
 
-                        if options:
-                            field.options = [opt for opt in options if opt.strip()]
-                            logger.info(f"   Found {len(field.options)} options")
+                            // Strategy 2: Select2 - look for data stored in original select
+                            const select2Container = select.closest('.select2-container') ||
+                                                    document.querySelector(`[data-select2-id="${{select.id}}"]`) ||
+                                                    select.parentElement?.querySelector('select');
+
+                            if (select2Container) {{
+                                // Find the actual hidden select element
+                                const hiddenSelect = document.getElementById(select.id) ||
+                                                   select.parentElement?.querySelector('select[id*="' + select.id.split('_')[0] + '"]');
+
+                                if (hiddenSelect && hiddenSelect.options) {{
+                                    const opts = Array.from(hiddenSelect.options).map(opt => ({{
+                                        text: opt.text.trim(),
+                                        value: opt.value
+                                    }}));
+                                    return opts.filter(o => o.text && o.text !== 'Please Select' && o.text !== 'Select');
+                                }}
+                            }}
+
+                            return [];
+                        }}
+                    """, field.selector)
+
+                    # If no options found via DOM, try clicking and capturing visible options
+                    if not options:
+                        try:
+                            # Find the Select2 trigger element
+                            select2_trigger = page.locator(f"{field.selector}").or_(
+                                page.locator(f"span.select2-container").filter(has=page.locator(field.selector))
+                            ).or_(
+                                page.locator(f"#{field.selector.strip('#')}_container")
+                            ).first
+
+                            if await select2_trigger.count() > 0:
+                                await select2_trigger.click(timeout=3000)
+                                await asyncio.sleep(0.5)
+
+                                # Capture visible options from dropdown
+                                options = await page.evaluate("""
+                                    () => {
+                                        const results = document.querySelectorAll('.select2-results li, .select2-results__option');
+                                        return Array.from(results).map(li => ({
+                                            text: li.textContent.trim(),
+                                            value: li.getAttribute('data-value') || li.textContent.trim()
+                                        })).filter(o => o.text && !o.text.includes('Searching') && !o.text.includes('Loading'));
+                                    }
+                                """)
+
+                                # Close dropdown
+                                await page.keyboard.press('Escape')
+                                await asyncio.sleep(0.3)
+                        except:
+                            pass
+
+                    if options:
+                        field.options = [opt['text'] for opt in options if opt.get('text')]
+                        logger.info(f"   Found {len(field.options)} options: {field.options[:3]}..." if len(field.options) > 3 else f"   Found {len(field.options)} options: {field.options}")
+                    else:
+                        logger.warning(f"   No options found for {field.label}")
 
                 except Exception as e:
                     logger.warning(f"   Could not explore {field.label}: {e}")
 
     async def _scroll_and_discover(self, page: Page, schema: FormSchema):
-        """Scroll page to discover lazy-loaded fields"""
+        """Scroll page to discover lazy-loaded fields - focuses on main complaint form"""
         logger.info(f"📜 Scrolling to discover hidden fields")
 
         # Scroll to bottom
         await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
         await asyncio.sleep(1)
 
-        # Get all form inputs
+        # Get all form inputs, but filter out common non-form sections
         all_inputs = await page.evaluate("""
             () => {
-                const inputs = document.querySelectorAll('input, select, textarea');
-                return Array.from(inputs).map(input => ({
-                    type: input.type || input.tagName.toLowerCase(),
-                    name: input.name || input.id,
-                    id: input.id,
-                    required: input.required,
-                    placeholder: input.placeholder
-                }));
+                // First, try to find the main complaint/grievance form
+                const mainForm = document.querySelector(
+                    'form[id*="complaint"], form[id*="grievance"], form[id*="ContentPlaceHolder"], ' +
+                    'div[id*="complaint"], div[id*="grievance"], main, .main-content'
+                );
+
+                // If found, search only within that form; otherwise search entire page
+                const searchRoot = mainForm || document;
+
+                const inputs = searchRoot.querySelectorAll('input, select, textarea');
+
+                return Array.from(inputs)
+                    .filter(input => {
+                        // Filter out fields from login, navbar, footer
+                        const isInLogin = input.closest('#login, .login, [class*="login"], [id*="login"]');
+                        const isInNav = input.closest('nav, .navbar, header, .header');
+                        const isInFooter = input.closest('footer, .footer');
+                        const isLanguageSelector = input.id?.includes('Language') || input.name?.includes('Language');
+
+                        return !isInLogin && !isInNav && !isInFooter && !isLanguageSelector;
+                    })
+                    .map(input => ({
+                        type: input.type || input.tagName.toLowerCase(),
+                        name: input.name || input.id,
+                        id: input.id,
+                        required: input.required,
+                        placeholder: input.placeholder,
+                        visible: input.offsetParent !== null  // Check if actually visible
+                    }));
             }
         """)
 
@@ -512,6 +628,114 @@ Return detailed JSON:
                 except Exception as e:
                     logger.debug(f"   Cascade test failed: {e}")
 
+    async def _disambiguate_submit_button_with_claude(
+        self,
+        page: Page,
+        possible_buttons: List[Dict[str, Any]]
+    ) -> Optional[str]:
+        """
+        Use Claude to identify the correct submit button from multiple candidates
+        Handles cases like abua_sathi where "Register Complaint" appears as both heading and button
+        """
+        logger.info(f"🤔 [{self.name}] Multiple submit buttons found, asking Claude to disambiguate...")
+
+        # Take screenshot
+        screenshot = await page.screenshot()
+        screenshot_base64 = base64.b64encode(screenshot).decode()
+
+        # Get button details
+        buttons_info = []
+        for i, btn in enumerate(possible_buttons):
+            buttons_info.append({
+                "index": i,
+                "text": btn.get("text", ""),
+                "type": btn.get("type", ""),
+                "selector": btn.get("selector", ""),
+                "class": btn.get("class", ""),
+                "visible": btn.get("visible", False),
+                "in_viewport": btn.get("in_viewport", False)
+            })
+
+        prompt = f"""You are analyzing a form to identify the ACTUAL submit button.
+
+Multiple button candidates were found, but only ONE is the real submit button.
+The others might be:
+- Headings styled as buttons
+- Navigation buttons
+- Decorative elements
+- Back-to-top buttons
+
+Here are the candidates:
+{json.dumps(buttons_info, indent=2)}
+
+Look at the screenshot and determine which candidate is the REAL form submit button.
+
+Consider:
+1. Is it visible and clickable?
+2. Is it positioned near form fields?
+3. Does its text clearly indicate submission (e.g., "Submit", "Register", "Send")?
+4. Is it a button/input element (not just styled text)?
+5. Is it in the viewport (not a floating back-to-top button)?
+
+Return JSON with:
+{{
+    "correct_index": <index of the real submit button>,
+    "reasoning": "<brief explanation>",
+    "confidence": <0.0 to 1.0>
+}}
+"""
+
+        try:
+            response = ai_client.client.chat.completions.create(
+                model=ai_client.models["balanced"],
+                messages=[{
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:image/png;base64,{screenshot_base64}"
+                            }
+                        },
+                        {
+                            "type": "text",
+                            "text": prompt
+                        }
+                    ]
+                }],
+                temperature=0.1,
+                max_tokens=500
+            )
+
+            cost_tracker.track_cost(
+                model=ai_client.models["balanced"],
+                input_tokens=response.usage.prompt_tokens,
+                output_tokens=response.usage.completion_tokens,
+                agent_name=self.name
+            )
+
+            result_text = response.choices[0].message.content.strip()
+            # Extract JSON from markdown code blocks if present
+            if "```json" in result_text:
+                result_text = result_text.split("```json")[1].split("```")[0].strip()
+            elif "```" in result_text:
+                result_text = result_text.split("```")[1].split("```")[0].strip()
+
+            result = json.loads(result_text)
+
+            if result.get("confidence", 0) > 0.6:
+                correct_button = possible_buttons[result["correct_index"]]
+                logger.info(f"   ✅ Claude identified: '{correct_button.get('text')}' (confidence: {result['confidence']:.2f})")
+                logger.info(f"   💡 Reasoning: {result['reasoning']}")
+                return correct_button.get("selector")
+            else:
+                logger.warning(f"   ⚠️ Low confidence ({result['confidence']:.2f}), using fallback")
+                return None
+
+        except Exception as e:
+            logger.error(f"Button disambiguation failed: {e}")
+            return None
+
     async def _validation_discovery_phase(
         self,
         url: str,
@@ -528,8 +752,50 @@ Return detailed JSON:
         try:
             await page.goto(url, wait_until="networkidle", timeout=30000)
 
-            # Try to submit empty form
+            # Enhanced submit button detection
             submit_selector = schema.submit_button.get("selector", "")
+            if not submit_selector:
+                # Try to find submit buttons
+                possible_buttons = await page.evaluate("""
+                    () => {
+                        const buttons = [];
+                        const selectors = [
+                            'button[type="submit"]',
+                            'input[type="submit"]',
+                            'button:not([type="button"])',
+                            '.btn-primary',
+                            'button.submit',
+                            '*[onclick*="submit"]'
+                        ];
+
+                        selectors.forEach(sel => {
+                            document.querySelectorAll(sel).forEach((btn, idx) => {
+                                const rect = btn.getBoundingClientRect();
+                                buttons.push({
+                                    text: btn.textContent?.trim() || btn.value || '',
+                                    type: btn.tagName,
+                                    selector: sel + ':nth-of-type(' + (idx + 1) + ')',
+                                    class: btn.className,
+                                    visible: rect.width > 0 && rect.height > 0,
+                                    in_viewport: rect.top >= 0 && rect.bottom <= window.innerHeight
+                                });
+                            });
+                        });
+
+                        return buttons;
+                    }
+                """)
+
+                if len(possible_buttons) > 1:
+                    # Use Claude to disambiguate
+                    submit_selector = await self._disambiguate_submit_button_with_claude(page, possible_buttons)
+                elif len(possible_buttons) == 1:
+                    submit_selector = possible_buttons[0].get("selector")
+
+                if submit_selector:
+                    schema.submit_button["selector"] = submit_selector
+
+            # Try to submit empty form
             if submit_selector:
                 logger.info(f"🚀 Submitting empty form to discover validation")
 

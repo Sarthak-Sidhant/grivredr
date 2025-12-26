@@ -1,0 +1,145 @@
+{
+  "municipality": "ranchi_smart",
+  "trained_on": 9,
+  "learned_patterns": {
+    "field_patterns": [
+      {
+        "type": "dropdown",
+        "selector_pattern": "select[id*='ContentPlaceHolder1_ddl']",
+        "id_pattern": "ctl00_ContentPlaceHolder1_ddl[A-Za-z]+",
+        "detection_method": "Look for <select> elements with ASP.NET generated IDs containing 'ddl' prefix and ContentPlaceHolder1 in the ID path",
+        "examples": [
+          "#ctl00_ContentPlaceHolder1_ddlProblem",
+          "#ctl00_ContentPlaceHolder1_ddlWardForArea"
+        ]
+      },
+      {
+        "type": "text",
+        "selector_pattern": "input[id*='ContentPlaceHolder1_txt']",
+        "id_pattern": "ctl00_ContentPlaceHolder1_txt[A-Za-z]+",
+        "detection_method": "Look for <input type='text'> elements with ASP.NET generated IDs containing 'txt' prefix"
+      },
+      {
+        "type": "textarea",
+        "selector_pattern": "textarea[id*='ContentPlaceHolder1_txt']",
+        "id_pattern": "ctl00_ContentPlaceHolder1_txt[A-Za-z]+",
+        "detection_method": "Look for <textarea> elements with ASP.NET ContentPlaceHolder pattern"
+      }
+    ],
+    "dropdown_patterns": {
+      "value_type": "numeric",
+      "placeholder_values": [
+        "0",
+        "--Not Set--"
+      ],
+      "option_structure": "Options use numeric IDs as values with descriptive text labels. Value '0' represents unselected/placeholder state. Value '-1' may represent 'Other' option.",
+      "known_dropdowns": {
+        "ddlProblem": {
+          "description": "Complaint/Problem type selector",
+          "option_count": 96,
+          "sample_options": [
+            {
+              "text": "--Not Set--",
+              "value": "0"
+            },
+            {
+              "text": "Dumping of cow dung in public places",
+              "value": "491"
+            },
+            {
+              "text": "Advertisement in corporation area without paying advertisement tax",
+              "value": "479"
+            }
+          ]
+        },
+        "ddlWardForArea": {
+          "description": "Ward/Area location selector",
+          "option_count": 425,
+          "sample_options": [
+            {
+              "text": "--Not Set--",
+              "value": "0"
+            },
+            {
+              "text": "Other",
+              "value": "-1"
+            },
+            {
+              "text": "Anand Vihar Colony",
+              "value": "158"
+            }
+          ]
+        }
+      }
+    },
+    "field_dependencies": {
+      "detected": false,
+      "potential_cascades": [
+        {
+          "parent": "ddlWardForArea",
+          "child": "unknown",
+          "notes": "Ward selection may trigger loading of sub-areas or localities"
+        }
+      ],
+      "notes": "Insufficient action data to confirm cascading behavior. ASP.NET forms typically use __doPostBack for cascading dropdowns."
+    },
+    "submit_button_patterns": [
+      "input[type='submit'][id*='ContentPlaceHolder1_btn']",
+      "input[type='button'][id*='ContentPlaceHolder1_btn']",
+      "button[id*='ContentPlaceHolder1_btn']",
+      "#ctl00_ContentPlaceHolder1_btnSubmit",
+      "#ctl00_ContentPlaceHolder1_btnSave",
+      "input[value*='Submit']",
+      "input[value*='Register']"
+    ],
+    "success_indicators": [
+      {
+        "type": "tracking_id",
+        "pattern": "Complaint (Number|ID|Reference)\\s*[:=]?\\s*[A-Z0-9-]+",
+        "notes": "Look for generated complaint/tracking number"
+      },
+      {
+        "type": "message",
+        "patterns": [
+          "successfully registered",
+          "complaint has been submitted",
+          "thank you for your complaint",
+          "registration successful"
+        ]
+      },
+      {
+        "type": "url_change",
+        "pattern": "Confirmation|Success|ThankYou"
+      },
+      {
+        "type": "element",
+        "selector": ".success-message, .alert-success, #lblMessage"
+      }
+    ],
+    "asp_net_specifics": {
+      "viewstate_field": "#__VIEWSTATE",
+      "eventvalidation_field": "#__EVENTVALIDATION",
+      "postback_pattern": "__doPostBack\\('([^']+)'",
+      "id_separator": "_",
+      "master_page_pattern": "ctl00_ContentPlaceHolder1_"
+    },
+    "form_url": "https://smartranchi.in/Portal/View/ComplaintRegistration.aspx?m=Online",
+    "confidence_score": 0.35,
+    "analysis_notes": {
+      "data_quality": "Poor - All 9 examples show Success: False with only 'None' action types recorded",
+      "limitations": [
+        "No successful submission examples available",
+        "Action details not captured (all show 'None' type)",
+        "Only 2 dropdowns discovered in Example 9",
+        "No text field or submit button interactions recorded"
+      ],
+      "recommendations": [
+        "Collect recordings with proper action type logging",
+        "Capture at least one successful form submission",
+        "Record all form field interactions including text inputs",
+        "Document the complete form field structure"
+      ]
+    }
+  },
+  "training_cost": 0.0
+}

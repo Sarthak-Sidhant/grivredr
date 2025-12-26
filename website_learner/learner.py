@@ -155,8 +155,8 @@ class WebsiteLearner:
                 "analysis": analysis_json,
                 "raw_analysis": raw_analysis,
                 "screenshots": [
-                    f"website_learner/screenshots/{municipality_name}_initial.png",
-                    f"website_learner/screenshots/{municipality_name}_explored.png"
+                    f"outputs/screenshots/{municipality_name}_initial.png",
+                    f"outputs/screenshots/{municipality_name}_explored.png"
                 ],
                 "metadata": {
                     "municipality": municipality_name,

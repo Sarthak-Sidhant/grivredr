@@ -40,9 +40,17 @@ ENV/
 *.log
 logs/
 
-# Screenshots and results (optional - comment out if you want to keep them)
+# Generated outputs and data
+outputs/screenshots/*.png
+outputs/generated_scrapers/*/
+data/cache/
+data/recordings/
+data/training_sessions/*.json
+
+# Legacy paths (for backwards compatibility)
 website_learner/screenshots/*.png
 executor/results/*.json
+generated_scrapers/
 
 # Learning results
 learning_results_*.json

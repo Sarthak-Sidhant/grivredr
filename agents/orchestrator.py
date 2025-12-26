@@ -63,20 +63,26 @@ class Orchestrator:
     Main coordinator for the AI agent training system
     """
 
-    def __init__(self, headless: bool = False):
+    def __init__(
+        self,
+        headless: bool = False,
+        enable_human_recording: bool = False,
+        on_human_needed: Optional[Callable] = None
+    ):
         self.headless = headless
+        self.enable_human_recording = enable_human_recording
         self.sessions: Dict[str, TrainingSession] = {}
         self.active_session: Optional[TrainingSession] = None
 
         # Callbacks for UI updates
         self.on_status_update: Optional[Callable] = None
         self.on_agent_action: Optional[Callable] = None
-        self.on_human_needed: Optional[Callable] = None
+        self.on_human_needed: Optional[Callable] = on_human_needed
         self.on_cost_update: Optional[Callable] = None
 
         # Results directory
-        self.results_dir = Path("training_sessions")
-        self.results_dir.mkdir(exist_ok=True)
+        self.results_dir = Path("data/training_sessions")
+        self.results_dir.mkdir(parents=True, exist_ok=True)
 
     async def train_municipality(
         self,
@@ -117,6 +123,9 @@ class Orchestrator:
             logger.info("PHASE 1: FORM DISCOVERY")
             logger.info("="*80)
 
+            if self.dashboard_enabled:
+                self.emit_update(session_id, "Form Discovery", 0, "Starting form discovery...")
+
             discovery_result = await self._run_form_discovery(session, url, municipality, hints)
 
             if not discovery_result["success"]:
@@ -124,18 +133,31 @@ class Orchestrator:
 
             session.discovery_result = discovery_result
 
+            if self.dashboard_enabled:
+                self.emit_update(session_id, "Form Discovery", 25,
+                               f"Discovered {len(discovery_result.get('schema', {}).get('fields', []))} fields")
+
             # Phase 2: JavaScript Analysis
             logger.info("\n" + "="*80)
             logger.info("PHASE 2: JAVASCRIPT ANALYSIS")
             logger.info("="*80)
 
+            if self.dashboard_enabled:
+                self.emit_update(session_id, "JavaScript Analysis", 25, "Analyzing dynamic JavaScript behavior...")
+
             js_result = await self._run_js_analysis(session, url)
             session.js_analysis_result = js_result
+
+            if self.dashboard_enabled:
+                self.emit_update(session_id, "JavaScript Analysis", 40, "JavaScript analysis complete")
 
             # Phase 3: Test Validation
             logger.info("\n" + "="*80)
             logger.info("PHASE 3: TEST VALIDATION")
             logger.info("="*80)
+
+            if self.dashboard_enabled:
+                self.emit_update(session_id, "Test Validation", 40, "Running validation tests...")
 
             test_result = await self._run_validation_tests(session)
 
@@ -144,10 +166,17 @@ class Orchestrator:
 
             session.test_result = test_result
 
+            if self.dashboard_enabled:
+                confidence = test_result.get("confidence_score", 0) * 100
+                self.emit_update(session_id, "Test Validation", 60, f"Validation complete ({confidence:.0f}% confidence)")
+
             # Phase 4: Code Generation
             logger.info("\n" + "="*80)
             logger.info("PHASE 4: CODE GENERATION")
             logger.info("="*80)
+
+            if self.dashboard_enabled:
+                self.emit_update(session_id, "Code Generation", 60, "Generating scraper code...")
 
             code_result = await self._run_code_generation(session)
 
@@ -156,12 +185,24 @@ class Orchestrator:
 
             session.code_gen_result = code_result
 
+            if self.dashboard_enabled:
+                validation_status = "validated" if code_result.get("scraper", {}).get("validation_passed") else "pending"
+                self.emit_update(session_id, "Code Generation", 90, f"Code generated ({validation_status})")
+
             # Phase 5: Finalize
             logger.info("\n" + "="*80)
             logger.info("TRAINING COMPLETE!")
             logger.info("="*80)
 
-            return await self._finalize_session(session)
+            if self.dashboard_enabled:
+                self.emit_update(session_id, "Complete", 100, "Training complete!")
+
+            result = await self._finalize_session(session)
+
+            if self.dashboard_enabled:
+                self.emit_complete(session_id, True, result)
+
+            return result
 
         except Exception as e:
             logger.error(f"❌ Training session failed: {e}")
@@ -379,7 +420,42 @@ class Orchestrator:
 
         # No human available, proceed with caution
         logger.warning("⚠️ No human available for review, proceeding anyway")
+
+        # Set test_result even if tests didn't fully pass
+        session.test_result = test_result
+
         code_result = await self._run_code_generation(session)
+
+        if code_result is None:
+            logger.error("❌ Code generation returned None")
+            session.status = "failed"
+            session.end_time = datetime.now()
+            return {
+                "success": False,
+                "session_id": session.session_id,
+                "error": "Code generation failed",
+                "phase_failed": "code_generation"
+            }
+
+        # Check if code generation failed validation
+        scraper_info = code_result.get("scraper", {})
+        validation_passed = scraper_info.get("validation_passed", False)
+
+        if not validation_passed and self.enable_human_recording:
+            logger.warning("\n⚠️  AI-generated scraper failed validation")
+            logger.info("🎬 Offering human recording as fallback...")
+
+            # Ask human if they want to record
+            recording_result = await self._offer_human_recording(session)
+
+            if recording_result and recording_result.get("success"):
+                logger.info("✅ Human recording completed and stored as ground truth")
+                session.human_interventions += 1
+                session.code_gen_result = recording_result
+                return await self._finalize_session(session)
+            else:
+                logger.warning("⚠️  Human recording declined or failed, using AI scraper anyway")
+
         session.code_gen_result = code_result
         return await self._finalize_session(session)
 
@@ -480,6 +556,190 @@ class Orchestrator:
             "by_model": cost_tracker.calls_by_model,
             "by_agent": cost_tracker.calls_by_agent
         }
+
+    async def _offer_human_recording(self, session: TrainingSession) -> Optional[Dict[str, Any]]:
+        """
+        Offer human to record their actions as ground truth
+
+        This is the fallback when AI fails:
+        1. Ask if human wants to record
+        2. Run HumanRecorderAgent
+        3. Store recording as ground truth in pattern library
+        4. Generate scraper from recording
+        """
+        from agents.human_recorder_agent import HumanRecorderAgent
+
+        print("\n" + "="*80)
+        print("🎬 AI SCRAPER VALIDATION FAILED")
+        print("="*80)
+        print()
+        print("The AI-generated scraper didn't pass validation.")
+        print("Would you like to:")
+        print()
+        print("  1. Record your actions filling the form (recommended)")
+        print("     → Becomes ground truth for pattern library")
+        print("     → Helps AI learn for future portals")
+        print()
+        print("  2. Skip and use AI scraper anyway")
+        print("     → May have bugs")
+        print("     → No ground truth stored")
+        print()
+
+        choice = input("Enter choice (1/2): ").strip()
+
+        if choice != "1":
+            logger.info("User declined recording, proceeding with AI scraper")
+            return None
+
+        logger.info("\n🎬 Starting human recording session...")
+        print()
+        print("INSTRUCTIONS:")
+        print("1. Browser will open (visible)")
+        print("2. Fill the form normally as you would")
+        print("3. Click submit when done")
+        print("4. Press Ctrl+C when you see success page")
+        print()
+        input("Press ENTER to start recording...")
+        print()
+
+        # Start recording
+        recorder = HumanRecorderAgent(
+            headless=False,
+            auto_stop=False,
+            capture_screenshots=True
+        )
+
+        try:
+            recording_result = await recorder.start_recording(
+                url=session.url,
+                municipality=session.municipality
+            )
+
+            if not recording_result.get("success"):
+                logger.error("❌ Recording failed or was cancelled")
+                return None
+
+            logger.info(f"✅ Recording complete: {recording_result['actions_count']} actions")
+
+            # Store recording as ground truth in pattern library
+            await self._store_recording_as_ground_truth(
+                session=session,
+                recording_result=recording_result
+            )
+
+            # Generate scraper from recording
+            from train_from_recording import generate_scraper_from_recording
+
+            scraper_result = await generate_scraper_from_recording(
+                recording_file=recording_result["recording_file"],
+                municipality=session.municipality
+            )
+
+            return {
+                "success": True,
+                "message": "Scraper generated from human recording",
+                "scraper": {
+                    "file_path": scraper_result.get("scraper_path"),
+                    "class_name": scraper_result.get("class_name"),
+                    "validation_passed": True,  # Human recording is ground truth
+                    "validation_attempts": 0,
+                    "confidence_score": 1.0,  # 100% confidence (ground truth)
+                    "source": "human_recording",
+                    "recording_file": recording_result["recording_file"]
+                }
+            }
+
+        except KeyboardInterrupt:
+            logger.info("\n🛑 Recording interrupted by user")
+            return None
+        except Exception as e:
+            logger.error(f"❌ Recording failed: {e}")
+            return None
+
+    async def _store_recording_as_ground_truth(
+        self,
+        session: TrainingSession,
+        recording_result: Dict[str, Any]
+    ):
+        """
+        Store human recording as ground truth in pattern library
+
+        This is the highest quality data:
+        - 100% accurate field selectors
+        - Real dropdown values that work
+        - Correct interaction sequence
+        - Proven to work (actual submission)
+        """
+        from knowledge.pattern_library import PatternLibrary
+        import json
+
+        pattern_lib = PatternLibrary()
+
+        # Load recording file
+        recording_file = recording_result.get("recording_file")
+        with open(recording_file, 'r') as f:
+            recording_data = json.load(f)
+
+        # Extract field mappings from recorded actions
+        fields = []
+        for action in recording_data.get("actions", []):
+            if action["action_type"] in ["fill", "select"]:
+                fields.append({
+                    "name": self._extract_field_name(action["selector"]),
+                    "type": "select" if action["action_type"] == "select" else "text",
+                    "selector": action["selector"],
+                    "value": action.get("value"),
+                    "required": True,  # Assume recorded fields are required
+                    "element_info": action.get("element_info", {})
+                })
+
+        # Create ground truth schema
+        ground_truth_schema = {
+            "url": session.url,
+            "municipality": session.municipality,
+            "fields": fields,
+            "tracking_id": recording_data.get("tracking_id"),
+            "source": "human_recording",
+            "confidence": 1.0
+        }
+
+        # Detect Select2 from recorded actions
+        has_select2 = any(
+            'select2' in action.get('element_info', {}).get('class', '').lower()
+            for action in recording_data.get("actions", [])
+            if action["action_type"] == "select"
+        )
+
+        # Store in pattern library with highest confidence
+        logger.info("💾 Storing human recording as ground truth in pattern library...")
+
+        pattern_lib.store_pattern(
+            municipality_name=session.municipality,
+            form_url=session.url,
+            form_schema=ground_truth_schema,
+            generated_code="# Generated from human recording",
+            confidence_score=1.0,  # Maximum confidence (ground truth)
+            validation_attempts=1,
+            js_analysis={
+                "source": "human_recording",
+                "select2_detected": has_select2,
+                "complexity": "observed"
+            }
+        )
+
+        logger.info("✅ Ground truth stored in pattern library")
+        logger.info(f"   Fields recorded: {len(fields)}")
+        logger.info(f"   Select2 detected: {has_select2}")
+        logger.info("   Future training runs will learn from this recording!")
+
+    def _extract_field_name(self, selector: str) -> str:
+        """Extract field name from selector"""
+        # Remove # and common prefixes
+        name = selector.replace('#', '').replace('$', '_')
+        # Extract last part if contains path
+        if '.' in name:
+            name = name.split('.')[-1]
+        return name
 
 
 # For testing

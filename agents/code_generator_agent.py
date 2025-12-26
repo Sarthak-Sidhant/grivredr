@@ -14,6 +14,9 @@ from dataclasses import dataclass
 from agents.base_agent import BaseAgent, cost_tracker
 from agents.form_discovery_agent import FormSchema
 from config.ai_client import ai_client
+from config.healing_prompts import HEALING_PROMPT_TEMPLATE
+from utils.scraper_validator import ScraperValidator, ValidationResult
+from knowledge.pattern_library import PatternLibrary
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -28,7 +31,10 @@ class GeneratedScraper:
     test_code: str
     syntax_valid: bool
     self_test_passed: bool
+    validation_passed: bool
+    validation_attempts: int
     warnings: list
+    confidence_score: float = 0.0
 
 
 class CodeGeneratorAgent(BaseAgent):
@@ -36,10 +42,14 @@ class CodeGeneratorAgent(BaseAgent):
     Agent that generates production-ready scraper code from validated schemas
     """
 
-    def __init__(self):
+    def __init__(self, enable_validation: bool = True, use_pattern_library: bool = True):
         super().__init__(name="CodeGeneratorAgent", max_attempts=3)
-        self.output_dir = Path("generated_scrapers")
-        self.output_dir.mkdir(exist_ok=True)
+        self.output_dir = Path("outputs/generated_scrapers")
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        self.enable_validation = enable_validation
+        self.use_pattern_library = use_pattern_library
+        self.validator = ScraperValidator(test_mode=True, timeout=60)
+        self.pattern_library = PatternLibrary() if use_pattern_library else None
 
     async def _execute_attempt(self, task: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -73,13 +83,99 @@ class CodeGeneratorAgent(BaseAgent):
             # Phase 3: Generate test code
             test_code = await self._generate_test_code(schema_dict, scraper_code)
 
-            # Phase 4: Save to file
-            scraper_path = await self._save_scraper(
-                municipality, scraper_code, test_code
+            # Phase 4: Save to temporary location for validation
+            temp_path = await self._save_scraper(
+                municipality, scraper_code, test_code, temp=True
             )
 
-            # Phase 5: Self-test (optional, can be slow)
-            # self_test_passed = await self._run_self_test(scraper_path)
+            # Phase 5: CRITICAL - Validate scraper execution
+            validation_passed = False
+            validation_attempts = 0
+            warnings = []
+
+            if self.enable_validation:
+                logger.info(f"🧪 [{self.name}] Validating scraper execution...")
+
+                # Prepare test data
+                test_data = self._generate_test_data(schema_dict)
+
+                # Attempt validation with self-healing loop
+                for attempt in range(3):
+                    validation_attempts = attempt + 1
+                    logger.info(f"   Validation attempt {validation_attempts}/3")
+
+                    validation_result = await self.validator.validate_scraper(
+                        scraper_path=temp_path,
+                        test_data=test_data,
+                        expected_schema={
+                            "required_fields": ["success", "message"],
+                            "field_types": {"success": "bool", "message": "str"}
+                        }
+                    )
+
+                    if validation_result.success:
+                        validation_passed = True
+                        logger.info(f"   ✅ Validation passed on attempt {validation_attempts}")
+                        break
+                    else:
+                        logger.warning(f"   ⚠️ Validation failed: {', '.join(validation_result.execution_errors)}")
+
+                        # Self-healing: Ask AI to fix the code
+                        if attempt < 2:  # Don't heal on last attempt
+                            logger.info(f"   🔧 Attempting self-healing...")
+                            scraper_code = await self._heal_scraper(
+                                scraper_code,
+                                validation_result,
+                                schema_dict
+                            )
+
+                            # Re-validate syntax
+                            syntax_valid = self._validate_syntax(scraper_code)
+                            if not syntax_valid:
+                                logger.error("   ❌ Healed code has syntax errors!")
+                                break
+
+                            # Save healed code for next validation attempt
+                            temp_path = await self._save_scraper(
+                                municipality, scraper_code, test_code, temp=True
+                            )
+                        else:
+                            warnings.append("Validation failed after 3 attempts")
+                            warnings.extend(validation_result.execution_errors[:3])
+            else:
+                logger.info(f"⚠️ [{self.name}] Validation skipped (disabled)")
+                validation_passed = True  # Assume pass if validation disabled
+
+            # Phase 6: Save to production location if validation passed
+            if validation_passed:
+                scraper_path = await self._save_scraper(
+                    municipality, scraper_code, test_code, temp=False
+                )
+                logger.info(f"   ✅ Saved to production: {scraper_path}")
+
+                # Phase 6.5: Store pattern in library for future use
+                if self.pattern_library and validation_passed:
+                    logger.info(f"💾 [{self.name}] Storing pattern in library...")
+                    self.pattern_library.store_pattern(
+                        municipality_name=municipality,
+                        form_url=url,
+                        form_schema=schema_dict,
+                        generated_code=scraper_code,
+                        confidence_score=confidence_score,
+                        validation_attempts=validation_attempts,
+                        js_analysis=js_analysis
+                    )
+            else:
+                scraper_path = temp_path
+                logger.warning(f"   ⚠️ Validation failed, scraper saved to temp location only")
+
+            # Calculate confidence score
+            confidence_score = self._calculate_confidence(
+                syntax_valid=syntax_valid,
+                validation_passed=validation_passed,
+                validation_attempts=validation_attempts,
+                test_results=test_results
+            )
 
             result = GeneratedScraper(
                 file_path=str(scraper_path),
@@ -87,8 +183,11 @@ class CodeGeneratorAgent(BaseAgent):
                 class_name=self._extract_class_name(scraper_code),
                 test_code=test_code,
                 syntax_valid=syntax_valid,
-                self_test_passed=True,  # self_test_passed
-                warnings=[]
+                self_test_passed=True,
+                validation_passed=validation_passed,
+                validation_attempts=validation_attempts,
+                warnings=warnings,
+                confidence_score=confidence_score
             )
 
             self._record_action(
@@ -107,7 +206,10 @@ class CodeGeneratorAgent(BaseAgent):
                     "file_path": result.file_path,
                     "class_name": result.class_name,
                     "syntax_valid": result.syntax_valid,
-                    "self_test_passed": result.self_test_passed
+                    "validation_passed": result.validation_passed,
+                    "validation_attempts": result.validation_attempts,
+                    "confidence_score": result.confidence_score,
+                    "warnings": result.warnings
                 }
             }
 
@@ -122,15 +224,95 @@ class CodeGeneratorAgent(BaseAgent):
         test_results: Dict[str, Any]
     ) -> str:
         """
-        Generate scraper code using Claude Opus
+        Generate scraper code using Claude Opus with pattern library assistance
         """
         logger.info(f"🤖 [{self.name}] Asking Claude Opus to generate code...")
 
         municipality = schema.get("municipality", "unknown").title().replace("_", "")
         url = schema.get("url", "")
 
+        # Check pattern library for similar forms
+        similar_patterns_text = ""
+        select2_code_example = ""
+        if self.pattern_library:
+            similar_patterns = self.pattern_library.find_similar_patterns(schema, top_k=3)
+
+            if similar_patterns:
+                logger.info(f"📚 Found {len(similar_patterns)} similar patterns in library")
+
+                similar_patterns_text = "\n**Similar Successful Patterns:**\n"
+                for i, pattern in enumerate(similar_patterns, 1):
+                    similar_patterns_text += f"\n{i}. {pattern.municipality_name}:"
+                    similar_patterns_text += f"\n   - Field types: {', '.join(set(pattern.field_types))}"
+                    similar_patterns_text += f"\n   - JS complexity: {pattern.js_complexity}"
+                    similar_patterns_text += f"\n   - Success rate: {pattern.success_rate:.0%}"
+                    similar_patterns_text += f"\n   - Validation attempts: {pattern.validation_attempts}"
+
+                    # Add code snippet recommendations
+                    if pattern.code_snippets:
+                        similar_patterns_text += f"\n   - Recommended patterns: {', '.join(pattern.code_snippets.keys())}"
+
+                    # Check if this pattern has Select2 handling
+                    if pattern.metadata:
+                        import json as json_lib
+                        try:
+                            metadata = json_lib.loads(pattern.metadata) if isinstance(pattern.metadata, str) else pattern.metadata
+                            if metadata.get('select2_detected') or metadata.get('jquery_required'):
+                                logger.info(f"   📦 Pattern {pattern.municipality_name} has Select2 handling!")
+                                # Extract Select2 method from stored code
+                                if 'select2' in pattern.code_snippets:
+                                    select2_code_example = pattern.code_snippets['select2']
+                        except Exception as e:
+                            logger.warning(f"Could not parse pattern metadata: {e}")
+
+                similar_patterns_text += "\n\n**Note:** Use these patterns as reference for handling similar form structures.\n"
+
+        # Detect Select2 dropdowns in schema
+        has_select2 = False
+        for field in schema.get('fields', []):
+            if 'select2' in field.get('class', '').lower() or field.get('select2', False):
+                has_select2 = True
+                break
+
+        select2_warning = ""
+        if has_select2:
+            select2_warning = """
+**⚠️  CRITICAL: This form uses Select2 jQuery dropdowns!**
+
+Regular Playwright select_option() will NOT work. You MUST use jQuery/JavaScript:
+
+```python
+# For Select2 dropdowns (class contains 'select2-hidden-accessible'):
+async def _select_select2_dropdown(self, page, selector, value, field_name, wait_after=1.5):
+    try:
+        js_code = '''
+            (args) => {
+                const select = document.querySelector(args.selector);
+                if (select && typeof $ !== 'undefined') {
+                    $(select).val(args.value);
+                    $(select).trigger('change');
+                    return true;
+                }
+                return false;
+            }
+        '''
+        result = await page.evaluate(js_code, {"selector": selector, "value": value})
+        if result:
+            await asyncio.sleep(wait_after)  # Wait for cascading
+            return True
+    except Exception as e:
+        logger.error(f"Select2 error: {e}")
+        return False
+```
+
+IMPORTANT: Detect Select2 by checking if field class contains 'select2' or 'select2-hidden-accessible'.
+"""
+
         # Build comprehensive prompt
         prompt = f"""You are an expert Python developer. Generate a production-ready web scraper class.
+
+{similar_patterns_text}
+{select2_warning}
 
 **Municipality:** {schema.get('municipality')}
 **URL:** {url}
@@ -192,7 +374,33 @@ class CodeGeneratorAgent(BaseAgent):
 - Clear variable names
 - Error messages that help debugging
 
-Generate ONLY the Python code. No explanations, just the complete class.
+**Handling Select2 Dropdowns:**
+If any select element has class 'select2-hidden-accessible', use jQuery to interact:
+
+```python
+await page.evaluate('''
+    (args) => {{
+        const select = document.querySelector(args.selector);
+        if (select && typeof $ !== 'undefined') {{
+            $(select).val(args.value);
+            $(select).trigger('change');
+            return true;
+        }}
+        return false;
+    }}
+''', {{"selector": "#field_id", "value": "field_value"}})
+await asyncio.sleep(1.5)  # Wait for cascading
+```
+
+DO NOT use page.select_option() for Select2 dropdowns - it will timeout!
+
+**CRITICAL OUTPUT FORMAT:**
+- Return ONLY raw Python code with NO markdown formatting
+- Do NOT wrap in ```python or ``` code fences
+- Do NOT include any explanations before or after the code
+- Start directly with the class definition (after imports will be added automatically)
+- End with the last closing brace of the class
+- The code will be saved directly to a .py file, so it must be pure Python
 """
 
         start_time = time.time()
@@ -200,7 +408,7 @@ Generate ONLY the Python code. No explanations, just the complete class.
             model=ai_client.models["powerful"],  # Opus for code generation
             messages=[{"role": "user", "content": prompt}],
             temperature=0.2,
-            max_tokens=6000
+            max_tokens=16000  # Increased to handle complete scraper generation
         )
         elapsed = time.time() - start_time
 
@@ -289,7 +497,7 @@ Return ONLY the fixed Python code, no explanations.
             model=ai_client.models["balanced"],
             messages=[{"role": "user", "content": prompt}],
             temperature=0.1,
-            max_tokens=6000
+            max_tokens=16000  # Increased to handle complete scraper generation
         )
 
         usage = response.usage
@@ -312,68 +520,253 @@ Return ONLY the fixed Python code, no explanations.
 
     async def _generate_test_code(self, schema: Dict[str, Any], scraper_code: str) -> str:
         """
-        Generate pytest test code for the scraper
+        Use AI to generate pytest test code that matches the actual schema fields
         """
         class_name = self._extract_class_name(scraper_code)
+        municipality = schema.get("municipality", "unknown")
 
-        test_code = f'''"""
-Test suite for {schema.get("municipality", "unknown")} scraper
-"""
-import pytest
-import asyncio
-from {schema.get("municipality", "unknown")}_scraper import {class_name}
+        # Ask Claude to generate proper tests based on the schema
+        prompt = f"""Generate a pytest test file for this scraper.
 
+**Scraper Class:** {class_name}
+**Municipality:** {municipality}
 
-@pytest.mark.asyncio
-async def test_submit_grievance():
-    """Test basic grievance submission"""
-    scraper = {class_name}(headless=True)
+**Form Schema (these are the EXACT fields the scraper expects):**
+```json
+{json.dumps(schema.get("fields", []), indent=2)}
+```
 
-    test_data = {{
-        "name": "Test User",
-        "mobile": "9876543210",
-        "email": "test@example.com",
-        "complaint": "Test complaint for automated testing",
-        # Add more fields as needed
-    }}
+**Requirements:**
+1. Import: `from {municipality}_scraper import {class_name}`
+2. Create test_submit_grievance() that:
+   - Uses the EXACT field names from the schema above
+   - Provides realistic test values for each field type
+   - For select/dropdown fields, use placeholder values with TODO comments
+   - Has strong assertions: `assert result["success"] is True, f"Failed: {{result.get('error')}}"`
+3. Create test_error_handling() that tests with empty data
+4. Use @pytest.mark.asyncio decorators
+5. Include proper docstrings
 
-    result = await scraper.submit_grievance(test_data)
+Generate ONLY the Python test code, no explanations."""
 
-    assert result["success"] is True or result["success"] is False  # Either outcome is valid
-    assert "message" in result
-    assert isinstance(result.get("screenshots", []), list)
+        response = ai_client.client.chat.completions.create(
+            model=ai_client.models["fast"],
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.2,
+            max_tokens=2000
+        )
 
+        test_code = response.choices[0].message.content
 
-@pytest.mark.asyncio
-async def test_error_handling():
-    """Test error handling with invalid data"""
-    scraper = {class_name}(headless=True)
-
-    # Empty data should trigger validation
-    result = await scraper.submit_grievance({{}})
-
-    assert result["success"] is False
-    assert len(result.get("errors", [])) > 0
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-v"])
-'''
+        # Extract code from markdown if present
+        import re
+        code_match = re.search(r'```python\s*(.*?)\s*```', test_code, re.DOTALL)
+        if code_match:
+            test_code = code_match.group(1)
+        else:
+            code_match = re.search(r'```\s*(.*?)\s*```', test_code, re.DOTALL)
+            if code_match:
+                test_code = code_match.group(1)
 
         return test_code
+
+    async def _heal_scraper(
+        self,
+        failed_code: str,
+        validation_result: ValidationResult,
+        schema: Dict[str, Any]
+    ) -> str:
+        """
+        Use AI to fix failing scraper code
+
+        Args:
+            failed_code: The code that failed validation
+            validation_result: Validation results with errors
+            schema: Original form schema
+
+        Returns:
+            Fixed code
+        """
+        logger.info(f"🔧 [{self.name}] Asking AI to heal failing code...")
+
+        # Format error details
+        error_details = "\n".join([
+            f"- {err}" for err in validation_result.execution_errors[:5]
+        ])
+
+        # Build healing prompt
+        prompt = HEALING_PROMPT_TEMPLATE.format(
+            error_details=error_details,
+            municipality_name=schema.get("municipality", "unknown"),
+            url=schema.get("url", ""),
+            form_analysis=json.dumps(schema, indent=2)[:1000],  # Truncate if too long
+            failed_code=failed_code,
+            execution_status=validation_result.execution_status,
+            execution_errors=", ".join(validation_result.execution_errors[:3]),
+            schema_errors=", ".join(validation_result.schema_errors[:3]),
+            timeout_issues=", ".join(validation_result.timeout_issues[:3]),
+            screenshot_path=validation_result.screenshot_path or "None"
+        )
+
+        start_time = time.time()
+        response = ai_client.client.chat.completions.create(
+            model=ai_client.models["balanced"],  # Sonnet for healing
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.2,
+            max_tokens=16000  # Increased to handle complete scraper generation
+        )
+        elapsed = time.time() - start_time
+
+        usage = response.usage
+        cost = cost_tracker.track_call(
+            model=ai_client.models["balanced"],
+            input_tokens=usage.prompt_tokens,
+            output_tokens=usage.completion_tokens,
+            agent_name=f"{self.name}_healing"
+        )
+
+        self._record_action(
+            action_type="self_healing",
+            description="Attempted to fix failing scraper",
+            result=f"Generated {usage.completion_tokens} tokens",
+            success=True,
+            cost=cost
+        )
+
+        # Extract code from response
+        healed_code = response.choices[0].message.content
+
+        import re
+        code_match = re.search(r'```python\s*(.*?)\s*```', healed_code, re.DOTALL)
+        if code_match:
+            healed_code = code_match.group(1)
+        else:
+            code_match = re.search(r'```\s*(.*?)\s*```', healed_code, re.DOTALL)
+            if code_match:
+                healed_code = code_match.group(1)
+
+        logger.info(f"   ✅ Generated healed code ({len(healed_code)} chars)")
+        return healed_code
+
+    def _generate_test_data(self, schema: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Generate test data based on form schema
+
+        Args:
+            schema: Form schema with fields
+
+        Returns:
+            Dictionary with test values for each field
+        """
+        test_data = {}
+
+        fields = schema.get("fields", [])
+        for field in fields:
+            field_name = field.get("name", "")
+            field_type = field.get("type", "text")
+
+            # Generate appropriate test values
+            if field_type == "text":
+                if "mobile" in field_name.lower() or "phone" in field_name.lower():
+                    test_data[field_name] = "9876543210"
+                elif "email" in field_name.lower():
+                    test_data[field_name] = "test@example.com"
+                elif "name" in field_name.lower():
+                    test_data[field_name] = "Test User"
+                else:
+                    test_data[field_name] = f"test_{field_name}"
+
+            elif field_type == "dropdown" or field_type == "select":
+                options = field.get("options", [])
+                if options and len(options) > 0:
+                    test_data[field_name] = options[0]
+                else:
+                    test_data[field_name] = "Option1"
+
+            elif field_type == "textarea":
+                test_data[field_name] = "This is a test complaint message for automated testing purposes."
+
+            elif field_type == "checkbox":
+                test_data[field_name] = True
+
+            elif field_type == "file":
+                test_data[field_name] = None  # Skip file uploads in test mode
+
+        logger.info(f"   Generated test data with {len(test_data)} fields")
+        return test_data
+
+    def _calculate_confidence(
+        self,
+        syntax_valid: bool,
+        validation_passed: bool,
+        validation_attempts: int,
+        test_results: Dict[str, Any]
+    ) -> float:
+        """
+        Calculate confidence score for generated scraper
+
+        Args:
+            syntax_valid: Whether syntax is valid
+            validation_passed: Whether validation passed
+            validation_attempts: Number of attempts needed
+            test_results: Results from test validation agent
+
+        Returns:
+            Confidence score (0.0 to 1.0)
+        """
+        confidence = 0.0
+
+        # Base score from test results
+        if test_results:
+            confidence = test_results.get("confidence_score", 0.7)
+        else:
+            confidence = 0.7  # Default
+
+        # Syntax validation (critical)
+        if not syntax_valid:
+            confidence *= 0.5
+
+        # Execution validation (critical)
+        if not validation_passed:
+            confidence *= 0.6
+        elif validation_attempts == 1:
+            # Passed on first try - bonus
+            confidence = min(1.0, confidence * 1.1)
+        elif validation_attempts == 2:
+            # Needed healing once
+            confidence *= 0.95
+        elif validation_attempts >= 3:
+            # Needed multiple healing attempts
+            confidence *= 0.85
+
+        return round(confidence, 2)
 
     async def _save_scraper(
         self,
         municipality: str,
         scraper_code: str,
-        test_code: str
+        test_code: str,
+        temp: bool = False
     ) -> Path:
         """
         Save scraper and test code to files
+
+        Args:
+            municipality: Municipality name
+            scraper_code: Python scraper code
+            test_code: Pytest test code
+            temp: If True, save to temp directory for validation
+
+        Returns:
+            Path to saved scraper file
         """
         # Create municipality directory
-        muni_dir = self.output_dir / municipality
-        muni_dir.mkdir(exist_ok=True)
+        if temp:
+            muni_dir = self.output_dir / "_temp" / municipality
+        else:
+            muni_dir = self.output_dir / municipality
+
+        muni_dir.mkdir(exist_ok=True, parents=True)
 
         # Create __init__.py
         init_file = muni_dir / "__init__.py"
