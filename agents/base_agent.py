@@ -216,7 +216,7 @@ Return JSON: {{"strategy": "description", "key_changes": ["change1", "change2"]}
 """
 
         start_time = time.time()
-        response = ai_client.client.chat.completions.create(
+        response = ai_client.client.messages.create(
             model=ai_client.models["balanced"],
             messages=[{"role": "user", "content": prompt}],
             temperature=0.3,
@@ -228,12 +228,12 @@ Return JSON: {{"strategy": "description", "key_changes": ["change1", "change2"]}
         usage = response.usage
         cost = cost_tracker.track_call(
             model=ai_client.models["balanced"],
-            input_tokens=usage.prompt_tokens,
-            output_tokens=usage.completion_tokens,
+            input_tokens=usage.input_tokens,
+            output_tokens=usage.output_tokens,
             agent_name=self.name
         )
 
-        strategy_response = response.choices[0].message.content
+        strategy_response = response.content[0].text
 
         # Record this as an action
         action = AgentAction(
@@ -243,7 +243,7 @@ Return JSON: {{"strategy": "description", "key_changes": ["change1", "change2"]}
             result=strategy_response,
             success=True,
             cost=cost,
-            tokens_used=usage.prompt_tokens + usage.completion_tokens
+            tokens_used=usage.input_tokens + usage.output_tokens
         )
         self.current_attempt.actions.append(action)
 
@@ -285,7 +285,7 @@ Return JSON: {{
 """
 
         start_time = time.time()
-        response = ai_client.client.chat.completions.create(
+        response = ai_client.client.messages.create(
             model=ai_client.models["balanced"],
             messages=[{"role": "user", "content": prompt}],
             temperature=0.2,
@@ -295,12 +295,12 @@ Return JSON: {{
         usage = response.usage
         cost = cost_tracker.track_call(
             model=ai_client.models["balanced"],
-            input_tokens=usage.prompt_tokens,
-            output_tokens=usage.completion_tokens,
+            input_tokens=usage.input_tokens,
+            output_tokens=usage.output_tokens,
             agent_name=f"{self.name}_reflection"
         )
 
-        reflection = response.choices[0].message.content
+        reflection = response.content[0].text
 
         if self.on_reflection:
             await self.on_reflection(self.name, reflection)
@@ -343,13 +343,25 @@ Return JSON: {{
             self.current_attempt.actions.append(action)
 
         if self.on_action:
-            asyncio.create_task(self.on_action(self.name, action))
+            # Wrap callback in error handler to avoid lost exceptions
+            async def safe_callback():
+                try:
+                    await self.on_action(self.name, action)
+                except Exception as e:
+                    logger.error(f"Callback error in on_action: {e}")
+            asyncio.create_task(safe_callback())
 
     def _set_status(self, status: AgentStatus):
         """Update agent status"""
         self.status = status
         if self.on_status_change:
-            asyncio.create_task(self.on_status_change(self.name, status))
+            # Wrap callback in error handler
+            async def safe_callback():
+                try:
+                    await self.on_status_change(self.name, status)
+                except Exception as e:
+                    logger.error(f"Callback error in on_status_change: {e}")
+            asyncio.create_task(safe_callback())
 
     def _trigger_reflection(self, reflection: Dict[str, Any]) -> bool:
         """Notify listeners about reflection"""

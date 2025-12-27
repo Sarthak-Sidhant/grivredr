@@ -8,6 +8,7 @@ build/
 develop-eggs/
 dist/
 downloads/
+docs/
 eggs/
 .eggs/
 lib/
@@ -22,17 +23,21 @@ wheels/
 
 # Virtual environments
 venv/
+ven/
 env/
 ENV/
+.venv/
 
 # IDE
 .vscode/
 .idea/
+.claude/
 *.swp
 *.swo
 *~
 
 # Environment
+.env
 .env.local
 .env.*.local
 
@@ -40,12 +45,20 @@ ENV/
 *.log
 logs/
 
-# Generated outputs and data
-outputs/screenshots/*.png
-outputs/generated_scrapers/*/
+# Generated outputs and data (artifacts from training)
+outputs/screenshots/
+outputs/generated_scrapers/
 data/cache/
 data/recordings/
-data/training_sessions/*.json
+data/training_sessions/
+cache/
+portals/
+scrapers/
+screenshots/
+
+# Knowledge base (generated patterns)
+knowledge/patterns.db
+knowledge/patterns.db-journal
 
 # Legacy paths (for backwards compatibility)
 website_learner/screenshots/*.png
@@ -61,7 +74,20 @@ learning_results_*.json
 # OS
 .DS_Store
 Thumbs.db
+*.png
 
 # Playwright
 playwright-report/
 test-results/
+
+# Archive and temporary files
+.archive/
+*.txt
+!requirements.txt
+
+# Lock files (optional - uncomment if using uv/poetry)
+uv.lock
+poetry.lock
+
+# Python version file
+.python-version

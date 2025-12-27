@@ -1,16 +1,32 @@
 """
 Pattern Library - Learns from successful scrapers to improve future generations
+
+Enhanced with:
+- Optional vector embeddings for semantic search
+- Actual code snippet storage (not just descriptions)
+- UI framework detection integration
+- Cascade pattern recognition
 """
 import json
 import sqlite3
 import hashlib
 import logging
-from typing import Dict, List, Any, Optional
+import re
+from typing import Dict, List, Any, Optional, Tuple
 from dataclasses import dataclass, asdict
 from pathlib import Path
 from datetime import datetime
 
 logger = logging.getLogger(__name__)
+
+# Optional vector store imports (graceful degradation)
+try:
+    from langchain_community.vectorstores import Chroma
+    from langchain_community.embeddings import HuggingFaceEmbeddings
+    VECTOR_STORE_AVAILABLE = True
+except ImportError:
+    VECTOR_STORE_AVAILABLE = False
+    logger.info("Vector store not available. Install with: pip install langchain-community chromadb sentence-transformers")
 
 
 @dataclass
@@ -37,12 +53,36 @@ class ScraperPattern:
 class PatternLibrary:
     """
     Stores and retrieves successful scraper patterns
+
+    Features:
+    - SQLite for structured data (fast, reliable)
+    - Optional Chroma vector store for semantic search
+    - Hybrid search: SQL + semantic similarity
     """
 
-    def __init__(self, db_path: str = "knowledge/patterns.db"):
+    def __init__(
+        self,
+        db_path: str = "knowledge/patterns.db",
+        enable_vector_store: bool = True
+    ):
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._init_database()
+
+        # Initialize vector store (optional)
+        self.vector_store = None
+        self.embeddings = None
+        self.use_vector_search = False
+
+        if enable_vector_store and VECTOR_STORE_AVAILABLE:
+            try:
+                self._init_vector_store()
+                self.use_vector_search = True
+                logger.info("✓ Vector store enabled for semantic search")
+            except Exception as e:
+                logger.warning(f"Vector store init failed: {e}, falling back to SQL-only")
+        elif enable_vector_store:
+            logger.info("Vector store requested but not available (install langchain-community)")
 
     def _init_database(self):
         """Initialize SQLite database with schema"""
@@ -88,6 +128,27 @@ class PatternLibrary:
 
         logger.info(f"✓ Pattern library initialized at {self.db_path}")
 
+    def _init_vector_store(self):
+        """Initialize Chroma vector store for semantic search"""
+        vector_dir = self.db_path.parent / "vectors"
+        vector_dir.mkdir(exist_ok=True)
+
+        # Use lightweight sentence transformers model
+        self.embeddings = HuggingFaceEmbeddings(
+            model_name="sentence-transformers/all-MiniLM-L6-v2",  # Fast, 80MB
+            model_kwargs={'device': 'cpu'},
+            encode_kwargs={'normalize_embeddings': True}
+        )
+
+        # Initialize Chroma
+        self.vector_store = Chroma(
+            persist_directory=str(vector_dir),
+            embedding_function=self.embeddings,
+            collection_name="form_patterns"
+        )
+
+        logger.info(f"✓ Vector store initialized at {vector_dir}")
+
     def store_pattern(
         self,
         municipality_name: str,
@@ -130,6 +191,26 @@ class PatternLibrary:
                 elif js_analysis.get("has_dynamic_content"):
                     js_complexity = "simple"
 
+            # Detect UI framework
+            ui_framework = self._detect_ui_framework(form_schema, generated_code)
+
+            # Check for Select2 specifically
+            has_select2 = any(
+                'select2' in f.get('class', '').lower() or f.get('select2', False)
+                for f in fields
+            )
+
+            # Build rich metadata
+            metadata = {
+                "field_count": len(fields),
+                "has_file_upload": any(f['type'] == 'file' for f in fields),
+                "has_cascading": bool(js_analysis and js_analysis.get("cascading_dropdowns")),
+                "ui_framework": ui_framework,
+                "select2_detected": has_select2,
+                "jquery_required": has_select2 or 'jQuery' in generated_code or '$.fn' in generated_code,
+                "has_ant_design": 'ant-select' in generated_code or 'ant-' in str(form_schema),
+            }
+
             # Create pattern
             pattern = ScraperPattern(
                 id=None,
@@ -144,11 +225,7 @@ class PatternLibrary:
                 confidence_score=confidence_score,
                 validation_attempts=validation_attempts,
                 created_at=datetime.now().isoformat(),
-                metadata={
-                    "field_count": len(fields),
-                    "has_file_upload": any(f['type'] == 'file' for f in fields),
-                    "has_cascading": bool(js_analysis and js_analysis.get("cascading_dropdowns"))
-                }
+                metadata=metadata
             )
 
             # Store in database
@@ -179,6 +256,29 @@ class PatternLibrary:
 
             conn.commit()
             conn.close()
+
+            # Also store in vector store for semantic search
+            if self.use_vector_search and self.vector_store:
+                try:
+                    # Convert schema to searchable text
+                    schema_text = self._schema_to_searchable_text(form_schema, municipality_name)
+
+                    # Store with metadata
+                    self.vector_store.add_texts(
+                        texts=[schema_text],
+                        metadatas=[{
+                            "municipality": municipality_name,
+                            "form_signature": form_signature,
+                            "confidence_score": confidence_score,
+                            "field_count": len(fields),
+                            "js_complexity": js_complexity
+                        }],
+                        ids=[form_signature]  # Use signature as ID for deduplication
+                    )
+
+                    logger.debug(f"  └─ Also stored in vector store")
+                except Exception as e:
+                    logger.warning(f"Vector store failed (non-critical): {e}")
 
             logger.info(f"✓ Stored pattern: {municipality_name} (signature: {form_signature[:8]}...)")
             return True
@@ -317,25 +417,137 @@ class PatternLibrary:
 
         return intersection / union if union > 0 else 0.0
 
+    def _detect_ui_framework(self, form_schema: Dict[str, Any], generated_code: str) -> str:
+        """
+        Detect UI framework from schema and generated code
+
+        Returns framework identifier string
+        """
+        fields = form_schema.get("fields", [])
+        schema_str = str(form_schema).lower()
+        code_lower = generated_code.lower()
+
+        # Check for Ant Design
+        if any('ant-' in f.get('class', '').lower() for f in fields):
+            return "ant_design"
+        if 'ant-select' in schema_str or 'ant-select' in code_lower:
+            return "ant_design"
+        if '.ant-select-dropdown' in generated_code:
+            return "ant_design"
+
+        # Check for Select2
+        if any('select2' in f.get('class', '').lower() or f.get('select2', False) for f in fields):
+            return "select2"
+        if 'select2' in schema_str or '$.fn.select2' in generated_code:
+            return "select2"
+
+        # Check for ASP.NET
+        form_url = form_schema.get("url", "")
+        if ".aspx" in form_url.lower():
+            return "asp_net_webforms"
+        if any('ctl00' in f.get('selector', '') for f in fields):
+            return "asp_net_webforms"
+        if '__viewstate' in code_lower or '__dopostback' in code_lower:
+            return "asp_net_webforms"
+
+        # Check for Bootstrap
+        if any('form-control' in f.get('class', '').lower() for f in fields):
+            return "bootstrap"
+
+        # Check for Material UI
+        if any('mui' in f.get('class', '').lower() for f in fields):
+            return "material_ui"
+
+        return "plain_html"
+
     def _extract_code_snippets(self, generated_code: str) -> Dict[str, str]:
-        """Extract reusable code snippets from generated scraper"""
+        """
+        Extract ACTUAL reusable code snippets from generated scraper
+
+        Instead of storing descriptions, extracts full method implementations
+        that can be directly reused in future scrapers.
+        """
         snippets = {}
 
-        # Extract field filling pattern
-        if "await page.fill(" in generated_code or "await page.type(" in generated_code:
-            snippets["field_filling"] = "await page.fill(selector, value)"
+        # Extract ant-design searchable select handler (proven working)
+        ant_select_match = re.search(
+            r'(async def _fill_searchable_select\(self[^)]+\):.*?(?=\n    async def |\n    def |\nclass |\Z))',
+            generated_code,
+            re.DOTALL
+        )
+        if ant_select_match:
+            snippets["ant_select"] = ant_select_match.group(1).strip()
+            logger.debug("Extracted ant_select snippet")
 
-        # Extract dropdown handling
-        if "await page.select_option(" in generated_code:
-            snippets["dropdown_handling"] = "await page.select_option(selector, value)"
+        # Extract select2 handler
+        select2_match = re.search(
+            r'(async def _fill_select2[^(]*\([^)]+\):.*?(?=\n    async def |\n    def |\nclass |\Z))',
+            generated_code,
+            re.DOTALL
+        )
+        if select2_match:
+            snippets["select2"] = select2_match.group(1).strip()
+            logger.debug("Extracted select2 snippet")
 
-        # Extract wait patterns
-        if "await page.wait_for_selector(" in generated_code:
-            snippets["explicit_wait"] = "await page.wait_for_selector(selector, timeout=5000)"
+        # Extract cascade handler
+        cascade_match = re.search(
+            r'(async def _fill_cascading[^(]*\([^)]+\):.*?(?=\n    async def |\n    def |\nclass |\Z))',
+            generated_code,
+            re.DOTALL
+        )
+        if cascade_match:
+            snippets["cascade"] = cascade_match.group(1).strip()
+            logger.debug("Extracted cascade snippet")
 
-        # Extract error handling pattern
-        if "try:" in generated_code and "except" in generated_code:
-            snippets["error_handling"] = "try-except with logging"
+        # Extract text input with validation handler
+        text_val_match = re.search(
+            r'(async def _fill_text[^(]*\([^)]+\):.*?(?=\n    async def |\n    def |\nclass |\Z))',
+            generated_code,
+            re.DOTALL
+        )
+        if text_val_match:
+            snippets["text_input"] = text_val_match.group(1).strip()
+            logger.debug("Extracted text_input snippet")
+
+        # Extract file upload handler
+        upload_match = re.search(
+            r'(async def _upload[^(]*\([^)]+\):.*?(?=\n    async def |\n    def |\nclass |\Z))',
+            generated_code,
+            re.DOTALL
+        )
+        if upload_match:
+            snippets["file_upload"] = upload_match.group(1).strip()
+            logger.debug("Extracted file_upload snippet")
+
+        # Extract ASP.NET viewstate handler
+        viewstate_match = re.search(
+            r'(async def _get_asp[^(]*\([^)]+\):.*?(?=\n    async def |\n    def |\nclass |\Z))',
+            generated_code,
+            re.DOTALL
+        )
+        if viewstate_match:
+            snippets["asp_viewstate"] = viewstate_match.group(1).strip()
+            logger.debug("Extracted asp_viewstate snippet")
+
+        # Extract retry decorator if present
+        retry_match = re.search(
+            r'(def retry_with_backoff\([^)]+\):.*?(?=\ndef |\nclass |\nasync def |\Z))',
+            generated_code,
+            re.DOTALL
+        )
+        if retry_match:
+            snippets["retry_decorator"] = retry_match.group(1).strip()
+            logger.debug("Extracted retry_decorator snippet")
+
+        # Log extraction summary
+        if snippets:
+            logger.info(f"   Extracted {len(snippets)} code snippets: {list(snippets.keys())}")
+        else:
+            # Fallback to basic detection
+            if "await page.fill(" in generated_code:
+                snippets["basic_fill"] = "page.fill()"
+            if "await page.select_option(" in generated_code:
+                snippets["basic_select"] = "page.select_option()"
 
         return snippets
 
@@ -373,8 +585,337 @@ class PatternLibrary:
 
         conn.close()
 
-        return {
+        stats = {
             "total_patterns": total_patterns,
             "avg_confidence": round(avg_confidence, 2),
-            "avg_success_rate": round(avg_success, 2)
+            "avg_success_rate": round(avg_success, 2),
+            "vector_store_enabled": self.use_vector_search
         }
+
+        if self.use_vector_search and self.vector_store:
+            try:
+                # Get vector store count
+                stats["vector_store_count"] = self.vector_store._collection.count()
+            except Exception as e:
+                logger.debug(f"Could not get vector store count: {e}")
+                stats["vector_store_count"] = "unavailable"
+
+        return stats
+
+    def find_similar_patterns_semantic(
+        self,
+        form_schema: Dict[str, Any],
+        municipality: str = "",
+        top_k: int = 3
+    ) -> List[Tuple[float, ScraperPattern]]:
+        """
+        Find similar patterns using semantic vector search
+
+        Uses embeddings to understand semantic similarity beyond just field types.
+        Example: "mobile_number" vs "phone" vs "contact" are semantically similar.
+
+        Args:
+            form_schema: Form schema to match
+            municipality: Municipality name (for context)
+            top_k: Number of results
+
+        Returns:
+            List of (similarity_score, pattern) tuples
+        """
+        if not self.use_vector_search:
+            logger.warning("Vector search not available, use find_similar_patterns() instead")
+            return []
+
+        try:
+            # Convert schema to searchable text
+            query_text = self._schema_to_searchable_text(form_schema, municipality)
+
+            # Semantic search
+            results = self.vector_store.similarity_search_with_score(
+                query=query_text,
+                k=top_k
+            )
+
+            # Convert to pattern objects
+            similar_patterns = []
+
+            for doc, score in results:
+                # Get full pattern from SQL by signature
+                form_signature = doc.metadata.get("form_signature")
+
+                if form_signature:
+                    pattern = self._get_pattern_by_signature(form_signature)
+                    if pattern:
+                        # Convert distance to similarity (closer = more similar)
+                        similarity = 1.0 / (1.0 + score)
+                        similar_patterns.append((similarity, pattern))
+
+            logger.info(f"✓ Semantic search found {len(similar_patterns)} matches")
+            return similar_patterns
+
+        except Exception as e:
+            logger.error(f"Semantic search failed: {e}")
+            return []
+
+    def find_similar_patterns_hybrid(
+        self,
+        form_schema: Dict[str, Any],
+        municipality: str = "",
+        top_k: int = 3
+    ) -> List[ScraperPattern]:
+        """
+        Hybrid search: combines SQL (structural) + vector (semantic) search
+
+        Best of both worlds:
+        - SQL finds structurally similar forms (same field types)
+        - Vectors find semantically similar forms (similar purpose/domain)
+        - Merges and re-ranks results
+
+        Args:
+            form_schema: Form schema
+            municipality: Municipality name
+            top_k: Number of results
+
+        Returns:
+            List of ScraperPattern objects sorted by combined similarity
+        """
+        # Get SQL results (structural similarity)
+        sql_results = self.find_similar_patterns(form_schema, top_k=top_k*2)
+
+        if not self.use_vector_search:
+            # Fall back to SQL only
+            return sql_results[:top_k]
+
+        # Get vector results (semantic similarity)
+        vector_results = self.find_similar_patterns_semantic(form_schema, municipality, top_k=top_k*2)
+
+        # Merge and combine scores
+        combined = {}
+
+        # Add SQL results
+        for i, pattern in enumerate(sql_results):
+            score = 1.0 - (i / len(sql_results)) if sql_results else 0
+            combined[pattern.form_signature] = {
+                "pattern": pattern,
+                "sql_score": score,
+                "vector_score": 0.0
+            }
+
+        # Add vector results
+        for similarity, pattern in vector_results:
+            if pattern.form_signature in combined:
+                combined[pattern.form_signature]["vector_score"] = similarity
+            else:
+                combined[pattern.form_signature] = {
+                    "pattern": pattern,
+                    "sql_score": 0.0,
+                    "vector_score": similarity
+                }
+
+        # Calculate combined score (weighted average)
+        scored_patterns = []
+        for sig, data in combined.items():
+            # 60% SQL (structural), 40% semantic
+            combined_score = (0.6 * data["sql_score"]) + (0.4 * data["vector_score"])
+            scored_patterns.append((combined_score, data["pattern"]))
+
+        # Sort by combined score
+        scored_patterns.sort(key=lambda x: x[0], reverse=True)
+
+        results = [pattern for _, pattern in scored_patterns[:top_k]]
+
+        logger.info(f"✓ Hybrid search found {len(results)} matches (SQL: {len(sql_results)}, Vector: {len(vector_results)})")
+        return results
+
+    def _schema_to_searchable_text(self, schema: Dict[str, Any], municipality: str = "") -> str:
+        """
+        Convert form schema to searchable text for embeddings
+
+        Creates rich text description that captures semantic meaning
+        """
+        fields = schema.get("fields", [])
+
+        text_parts = []
+
+        # Municipality context
+        if municipality:
+            text_parts.append(f"Municipality: {municipality}")
+
+        # Field descriptions (semantic rich)
+        text_parts.append(f"Form with {len(fields)} fields:")
+
+        for field in fields[:20]:  # Limit to avoid token limits
+            name = field.get("name", "unknown").replace("_", " ")
+            ftype = field.get("type", "text")
+            required = "required" if field.get("required") else "optional"
+
+            field_desc = f"{name} ({ftype}, {required})"
+
+            # Add semantic context
+            if ftype == "select" and field.get("options"):
+                field_desc += f" with {len(field['options'])} options"
+            if field.get("depends_on"):
+                field_desc += f" cascades from {field['depends_on']}"
+            if field.get("validation"):
+                field_desc += f" validated"
+
+            text_parts.append(field_desc)
+
+        # Form features
+        features = []
+        if schema.get("captcha_present"):
+            features.append("has CAPTCHA")
+        if schema.get("multi_step"):
+            features.append("multi-step form")
+        if any(f.get("type") == "file" for f in fields):
+            features.append("has file upload")
+
+        cascading_count = len([f for f in fields if f.get("depends_on")])
+        if cascading_count > 0:
+            features.append(f"{cascading_count} cascading fields")
+
+        if features:
+            text_parts.append(f"Features: {', '.join(features)}")
+
+        return "\n".join(text_parts)
+
+    def _get_pattern_by_signature(self, form_signature: str) -> Optional[ScraperPattern]:
+        """Get pattern from SQL by form signature"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
+        cursor.execute(
+            "SELECT * FROM patterns WHERE form_signature = ? LIMIT 1",
+            (form_signature,)
+        )
+
+        row = cursor.fetchone()
+        conn.close()
+
+        if row:
+            return self._row_to_pattern(row)
+        return None
+
+    def get_templates_for_schema(self, form_schema: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Get recommended code templates based on form schema
+
+        Combines:
+        1. Templates from code_templates.py based on detected framework
+        2. Code snippets from similar successful patterns
+        3. Cascade pattern recommendations
+
+        Args:
+            form_schema: Form schema to analyze
+
+        Returns:
+            Dictionary with templates, snippets, and recommendations
+        """
+        result = {
+            "ui_framework": "unknown",
+            "framework_confidence": 0.0,
+            "templates": {},
+            "snippets_from_patterns": {},
+            "cascade_recommendations": [],
+            "recommendations": []
+        }
+
+        # 1. Detect UI framework
+        ui_framework = self._detect_ui_framework(form_schema, "")
+        result["ui_framework"] = ui_framework
+
+        # 2. Try to get templates from code_templates module
+        try:
+            from knowledge.code_templates import (
+                get_templates_for_framework,
+                get_cascade_pattern,
+                UIFramework as TemplateFramework
+            )
+
+            # Map string to enum
+            framework_map = {
+                "ant_design": TemplateFramework.ANT_DESIGN,
+                "select2": TemplateFramework.SELECT2,
+                "asp_net_webforms": TemplateFramework.ASP_NET_WEBFORMS,
+                "bootstrap": TemplateFramework.PLAIN_HTML,
+                "material_ui": TemplateFramework.MATERIAL_UI,
+                "plain_html": TemplateFramework.PLAIN_HTML,
+            }
+
+            template_framework = framework_map.get(ui_framework, TemplateFramework.PLAIN_HTML)
+            templates = get_templates_for_framework(template_framework)
+
+            for name, template in templates.items():
+                result["templates"][name] = {
+                    "code": template.code,
+                    "description": template.description,
+                    "tested_on": template.tested_on
+                }
+
+            result["framework_confidence"] = 0.8 if templates else 0.3
+            logger.info(f"   Found {len(templates)} templates for {ui_framework}")
+
+        except ImportError:
+            logger.warning("code_templates module not available")
+
+        # 3. Get snippets from similar patterns in library
+        similar_patterns = self.find_similar_patterns(form_schema, top_k=3)
+        for pattern in similar_patterns:
+            if pattern.code_snippets:
+                for snippet_type, snippet_code in pattern.code_snippets.items():
+                    if snippet_type not in result["snippets_from_patterns"]:
+                        result["snippets_from_patterns"][snippet_type] = {
+                            "code": snippet_code,
+                            "source": pattern.municipality_name,
+                            "confidence": pattern.confidence_score
+                        }
+
+        # 4. Detect cascade patterns
+        fields = form_schema.get("fields", [])
+        cascade_fields = [f for f in fields if f.get("cascades_to") or f.get("depends_on")]
+
+        try:
+            from knowledge.code_templates import get_cascade_pattern, get_recommended_wait_time
+
+            for field in cascade_fields:
+                parent = field.get("name", "")
+                child = field.get("cascades_to", "")
+                if parent and child:
+                    cascade_info = get_cascade_pattern(parent, child)
+                    if cascade_info:
+                        result["cascade_recommendations"].append({
+                            "parent": parent,
+                            "child": child,
+                            "wait_time": cascade_info["wait_time"],
+                            "description": cascade_info["description"]
+                        })
+                    else:
+                        # Default recommendation
+                        result["cascade_recommendations"].append({
+                            "parent": parent,
+                            "child": child,
+                            "wait_time": get_recommended_wait_time(parent, child),
+                            "description": f"Cascade: {parent} → {child}"
+                        })
+        except ImportError:
+            pass
+
+        # 5. Build recommendations list
+        if ui_framework == "ant_design":
+            result["recommendations"] = [
+                "Use _fill_searchable_select() for ant-select dropdowns",
+                "Find visible dropdown with .ant-select-dropdown",
+                "Wait 0.8s after click for dropdown animation",
+            ]
+        elif ui_framework == "select2":
+            result["recommendations"] = [
+                "DO NOT use page.select_option() - use jQuery",
+                "Set value with $(selector).val(value).trigger('change')",
+            ]
+        elif ui_framework == "asp_net_webforms":
+            result["recommendations"] = [
+                "Extract __VIEWSTATE before submission",
+                "Selectors use ctl00_ContentPlaceHolder1_ prefix",
+            ]
+
+        return result

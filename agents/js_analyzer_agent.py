@@ -139,6 +139,40 @@ class JavaScriptAnalyzerAgent(BaseAgent):
         context = await self.browser.new_context()
         page = await context.new_page()
         events = []
+        network_requests = []
+
+        # ENHANCED: Monitor ALL network requests with full details
+        async def handle_request(route, request):
+            """Capture all network requests for API detection"""
+            network_requests.append({
+                'url': request.url,
+                'method': request.method,
+                'headers': dict(request.headers),
+                'post_data': request.post_data,
+                'resource_type': request.resource_type,
+                'timestamp': time.time()
+            })
+            await route.continue_()
+
+        async def handle_response(response):
+            """Capture response data"""
+            try:
+                if response.request.resource_type in ['xhr', 'fetch']:
+                    # This is an API call - capture the response
+                    network_requests.append({
+                        'type': 'response',
+                        'url': response.url,
+                        'status': response.status,
+                        'headers': dict(await response.all_headers()),
+                        'body': (await response.text())[:1000] if response.ok else None,  # First 1000 chars
+                        'timestamp': time.time()
+                    })
+            except:
+                pass
+
+        # Intercept all network traffic
+        await page.route('**/*', handle_request)
+        page.on('response', handle_response)
 
         try:
             # Inject monitoring script
@@ -254,6 +288,16 @@ class JavaScriptAnalyzerAgent(BaseAgent):
                     details=event_data
                 ))
 
+            # Add network requests as events
+            for req in network_requests:
+                events.append(JSEvent(
+                    event_type='network_request' if req.get('method') else 'network_response',
+                    timestamp=req.get('timestamp', time.time()) * 1000,
+                    details=req
+                ))
+
+            logger.info(f"   🌐 Captured {len(network_requests)} network requests")
+
             return events
 
         except Exception as e:
@@ -307,6 +351,7 @@ class JavaScriptAnalyzerAgent(BaseAgent):
             "has_form_submit": any(e.event_type == "form_submit" for e in events),
             "validation_errors": [e for e in events if e.event_type == "validation_error"],
             "ajax_calls": [],
+            "api_calls": [],  # NEW: Detailed API call tracking
             "submission_endpoint": None
         }
 
@@ -319,6 +364,31 @@ class JavaScriptAnalyzerAgent(BaseAgent):
                     "url": event.details.get("url", ""),
                     "data": event.details.get("data", {})
                 })
+
+            # NEW: Extract full network requests for API detection
+            if event.event_type == "network_request":
+                resource_type = event.details.get("resource_type", "")
+                if resource_type in ["xhr", "fetch"]:
+                    analysis["api_calls"].append({
+                        "url": event.details.get("url"),
+                        "method": event.details.get("method"),
+                        "headers": event.details.get("headers", {}),
+                        "body": event.details.get("post_data"),
+                        "resource_type": resource_type
+                    })
+
+            # NEW: Match responses to requests
+            if event.event_type == "network_response":
+                url = event.details.get("url")
+                # Find matching request
+                for api_call in analysis["api_calls"]:
+                    if api_call["url"] == url and "response" not in api_call:
+                        api_call["response"] = {
+                            "status": event.details.get("status"),
+                            "headers": event.details.get("headers", {}),
+                            "body": event.details.get("body")
+                        }
+                        break
 
         # Determine submission endpoint
         form_submits = [e for e in events if e.event_type == "form_submit"]
@@ -386,7 +456,7 @@ Return JSON:
 """
 
         start_time = time.time()
-        response = ai_client.client.chat.completions.create(
+        response = ai_client.client.messages.create(
             model=ai_client.models["powerful"],  # Opus for complex analysis
             messages=[{"role": "user", "content": prompt}],
             temperature=0.2,
@@ -397,20 +467,20 @@ Return JSON:
         usage = response.usage
         cost = cost_tracker.track_call(
             model=ai_client.models["powerful"],
-            input_tokens=usage.prompt_tokens,
-            output_tokens=usage.completion_tokens,
+            input_tokens=usage.input_tokens,
+            output_tokens=usage.output_tokens,
             agent_name=self.name
         )
 
         self._record_action(
             action_type="claude_interpretation",
             description="Claude interpreted JS behavior",
-            result=response.choices[0].message.content[:200],
+            result=response.content[0].text[:200],
             success=True,
             cost=cost
         )
 
-        return response.choices[0].message.content
+        return response.content[0].text
 
     async def _determine_automation_strategy(
         self,

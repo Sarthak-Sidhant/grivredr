@@ -190,12 +190,17 @@ class FormDiscoveryAgent(BaseAgent):
             # Get page HTML
             html_content = await page.content()
 
+            # NEW: Extract event listeners from form fields
+            event_listeners = await self._extract_event_listeners(page)
+            logger.info(f"   🎯 Detected {len(event_listeners)} fields with event listeners")
+
             # Analyze with Claude Vision
             analysis = await self._ask_claude_vision(
                 screenshot_base64,
                 url,
                 html_content[:5000],  # First 5000 chars
-                phase="initial"
+                phase="initial",
+                event_listeners=event_listeners  # Pass event info to Claude
             )
 
             self._record_action(
@@ -231,13 +236,27 @@ class FormDiscoveryAgent(BaseAgent):
         screenshot_base64: str,
         url: str,
         html_snippet: str,
-        phase: str = "initial"
+        phase: str = "initial",
+        event_listeners: Dict[str, Any] = None
     ) -> Dict[str, Any]:
         """
         Ask Claude Vision to analyze the form
         """
         if phase == "initial":
+            event_info = ""
+            if event_listeners:
+                event_info = f"""
+**DETECTED EVENT LISTENERS:**
+The following fields have JavaScript event handlers that may trigger validation or dynamic behavior:
+{json.dumps(event_listeners, indent=2)}
+
+NOTE: Fields with 'blur' listeners need to be focused then unfocused to trigger validation.
+Fields with 'input' listeners validate as you type.
+"""
+
             prompt = f"""Analyze this grievance/complaint form from {url}.
+
+{event_info}
 
 Your task:
 1. Identify the form title and purpose
@@ -291,15 +310,17 @@ Return detailed JSON:
         import time
         start = time.time()
 
-        response = ai_client.client.chat.completions.create(
+        response = ai_client.client.messages.create(
             model=ai_client.models["balanced"],  # Sonnet for Vision
             messages=[{
                 "role": "user",
                 "content": [
                     {
-                        "type": "image_url",
-                        "image_url": {
-                            "url": f"data:image/png;base64,{screenshot_base64}"
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": "image/png",
+                            "data": screenshot_base64
                         }
                     },
                     {
@@ -317,13 +338,13 @@ Return detailed JSON:
 
         cost = cost_tracker.track_call(
             model=ai_client.models["balanced"],
-            input_tokens=usage.prompt_tokens,
-            output_tokens=usage.completion_tokens,
+            input_tokens=usage.input_tokens,
+            output_tokens=usage.output_tokens,
             agent_name=self.name
         )
 
         return {
-            "response": response.choices[0].message.content,
+            "response": response.content[0].text,
             "cost": cost,
             "elapsed": elapsed
         }
@@ -518,8 +539,8 @@ Return detailed JSON:
                                 # Close dropdown
                                 await page.keyboard.press('Escape')
                                 await asyncio.sleep(0.3)
-                        except:
-                            pass
+                        except Exception as e:
+                            logger.debug(f"Select2 click failed for {field.label}: {e}")
 
                     if options:
                         field.options = [opt['text'] for opt in options if opt.get('text')]
@@ -686,15 +707,17 @@ Return JSON with:
 """
 
         try:
-            response = ai_client.client.chat.completions.create(
+            response = ai_client.client.messages.create(
                 model=ai_client.models["balanced"],
                 messages=[{
                     "role": "user",
                     "content": [
                         {
-                            "type": "image_url",
-                            "image_url": {
-                                "url": f"data:image/png;base64,{screenshot_base64}"
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": "image/png",
+                                "data": screenshot_base64
                             }
                         },
                         {
@@ -707,14 +730,14 @@ Return JSON with:
                 max_tokens=500
             )
 
-            cost_tracker.track_cost(
+            cost_tracker.track_call(
                 model=ai_client.models["balanced"],
-                input_tokens=response.usage.prompt_tokens,
-                output_tokens=response.usage.completion_tokens,
+                input_tokens=response.usage.input_tokens,
+                output_tokens=response.usage.output_tokens,
                 agent_name=self.name
             )
 
-            result_text = response.choices[0].message.content.strip()
+            result_text = response.content[0].text.strip()
             # Extract JSON from markdown code blocks if present
             if "```json" in result_text:
                 result_text = result_text.split("```json")[1].split("```")[0].strip()
@@ -735,6 +758,65 @@ Return JSON with:
         except Exception as e:
             logger.error(f"Button disambiguation failed: {e}")
             return None
+
+    async def _extract_event_listeners(self, page: Page) -> Dict[str, Any]:
+        """
+        Extract event listeners from form fields
+        Returns which fields have blur, focus, input, change handlers
+        """
+        try:
+            event_map = await page.evaluate("""
+                () => {
+                    const elements = document.querySelectorAll('input, select, textarea, button');
+                    const eventMap = {};
+
+                    elements.forEach(el => {
+                        const id = el.id || el.name || el.className || 'unknown';
+
+                        // Check for inline event handlers
+                        const hasOnBlur = !!el.onblur || el.hasAttribute('onblur');
+                        const hasOnFocus = !!el.onfocus || el.hasAttribute('onfocus');
+                        const hasOnChange = !!el.onchange || el.hasAttribute('onchange');
+                        const hasOnInput = !!el.oninput || el.hasAttribute('oninput');
+
+                        // Check for jQuery event handlers (if jQuery exists)
+                        let hasJQueryEvents = false;
+                        if (typeof $ !== 'undefined' && $.data) {
+                            const events = $._data(el, 'events');
+                            if (events) {
+                                hasJQueryEvents = true;
+                            }
+                        }
+
+                        if (hasOnBlur || hasOnFocus || hasOnChange || hasOnInput || hasJQueryEvents) {
+                            eventMap[id] = {
+                                element: el.tagName.toLowerCase(),
+                                id: el.id,
+                                name: el.name,
+                                class: el.className,
+                                listeners: {
+                                    blur: hasOnBlur,
+                                    focus: hasOnFocus,
+                                    change: hasOnChange,
+                                    input: hasOnInput,
+                                    jquery: hasJQueryEvents
+                                },
+                                // Check if element is part of validation
+                                required: el.required || el.hasAttribute('required'),
+                                pattern: el.pattern || null
+                            };
+                        }
+                    });
+
+                    return eventMap;
+                }
+            """)
+
+            return event_map
+
+        except Exception as e:
+            logger.warning(f"Failed to extract event listeners: {e}")
+            return {}
 
     async def _validation_discovery_phase(
         self,

@@ -17,6 +17,11 @@ from config.ai_client import ai_client
 from config.healing_prompts import HEALING_PROMPT_TEMPLATE
 from utils.scraper_validator import ScraperValidator, ValidationResult
 from knowledge.pattern_library import PatternLibrary
+from knowledge.code_templates import (
+    get_template_code_for_prompt,
+    UIFramework,
+    get_templates_for_framework
+)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -153,29 +158,29 @@ class CodeGeneratorAgent(BaseAgent):
                 )
                 logger.info(f"   ✅ Saved to production: {scraper_path}")
 
-                # Phase 6.5: Store pattern in library for future use
-                if self.pattern_library and validation_passed:
-                    logger.info(f"💾 [{self.name}] Storing pattern in library...")
-                    self.pattern_library.store_pattern(
-                        municipality_name=municipality,
-                        form_url=url,
-                        form_schema=schema_dict,
-                        generated_code=scraper_code,
-                        confidence_score=confidence_score,
-                        validation_attempts=validation_attempts,
-                        js_analysis=js_analysis
-                    )
-            else:
-                scraper_path = temp_path
-                logger.warning(f"   ⚠️ Validation failed, scraper saved to temp location only")
-
-            # Calculate confidence score
+            # Calculate confidence score (must be done before storing pattern)
             confidence_score = self._calculate_confidence(
                 syntax_valid=syntax_valid,
                 validation_passed=validation_passed,
                 validation_attempts=validation_attempts,
                 test_results=test_results
             )
+
+            # Phase 6.5: Store pattern in library for future use
+            if self.pattern_library and validation_passed:
+                logger.info(f"💾 [{self.name}] Storing pattern in library...")
+                self.pattern_library.store_pattern(
+                    municipality_name=municipality,
+                    form_url=url,
+                    form_schema=schema_dict,
+                    generated_code=scraper_code,
+                    confidence_score=confidence_score,
+                    validation_attempts=validation_attempts,
+                    js_analysis=js_analysis
+                )
+            else:
+                scraper_path = temp_path
+                logger.warning(f"   ⚠️ Validation failed, scraper saved to temp location only")
 
             result = GeneratedScraper(
                 file_path=str(scraper_path),
@@ -225,6 +230,7 @@ class CodeGeneratorAgent(BaseAgent):
     ) -> str:
         """
         Generate scraper code using Claude Opus with pattern library assistance
+        Enhanced with API-aware and event-aware generation
         """
         logger.info(f"🤖 [{self.name}] Asking Claude Opus to generate code...")
 
@@ -308,11 +314,116 @@ async def _select_select2_dropdown(self, page, selector, value, field_name, wait
 IMPORTANT: Detect Select2 by checking if field class contains 'select2' or 'select2-hidden-accessible'.
 """
 
+        # NEW: Extract API calls and event listeners
+        api_calls = js_analysis.get('api_calls', [])
+        event_listeners = schema.get('event_listeners', {})
+
+        # Build API-aware section
+        api_section = ""
+        if api_calls:
+            api_section = f"""
+**🌐 DETECTED API CALLS (Network Tab):**
+The following API calls were captured during form interaction:
+
+```json
+{json.dumps(api_calls[:5], indent=2)}
+```
+
+**CRITICAL: Try to replicate these API calls directly with httpx/aiohttp!**
+- This will be 5-10x faster than browser automation
+- Only use browser if APIs require session cookies or complex auth
+- Example hybrid approach:
+
+```python
+import httpx
+
+async def _try_direct_api(self, data):
+    \"\"\"Attempt direct API submission (fast path)\"\"\"
+    async with httpx.AsyncClient() as client:
+        try:
+            response = await client.post(
+                'actual_api_endpoint_from_network_tab',
+                json=data,
+                headers={{
+                    'User-Agent': 'Mozilla/5.0...',
+                    'Content-Type': 'application/json'
+                }}
+            )
+            if response.status_code == 200:
+                return response.json()
+        except:
+            pass  # Fall back to browser
+    return None
+```
+"""
+
+        # Build event listener section
+        event_section = ""
+        if event_listeners:
+            event_section = f"""
+**🎯 DETECTED EVENT LISTENERS:**
+The following fields have JavaScript event handlers:
+
+```json
+{json.dumps(event_listeners, indent=2)}
+```
+
+**CRITICAL: Trigger these events properly!**
+- Fields with 'blur' listener: Must focus() then blur() to trigger validation
+- Fields with 'input' listener: Type slowly or trigger 'input' event
+- Example:
+
+```python
+async def _fill_with_events(self, page, selector, value, listeners):
+    element = await page.wait_for_selector(selector)
+
+    # Focus first
+    await element.focus()
+    await asyncio.sleep(0.1)
+
+    # Fill value
+    await element.fill(value)
+
+    # Trigger blur if has blur listener
+    if listeners.get('blur'):
+        await element.blur()
+        await asyncio.sleep(0.3)  # Wait for validation
+```
+"""
+
+        # Get proven code templates based on detected UI framework
+        templates_section = ""
+        detected_framework = UIFramework.PLAIN_HTML
+
+        # Detect framework from schema
+        for field in schema.get('fields', []):
+            field_class = field.get('class', '').lower()
+            if 'ant-select' in field_class or 'ant-' in field_class:
+                detected_framework = UIFramework.ANT_DESIGN
+                break
+            elif 'select2' in field_class or field.get('select2', False):
+                detected_framework = UIFramework.SELECT2
+                break
+
+        # Check URL for ASP.NET
+        if '.aspx' in url.lower() or any('ctl00' in f.get('selector', '') for f in schema.get('fields', [])):
+            detected_framework = UIFramework.ASP_NET_WEBFORMS
+
+        # Get templates for this framework
+        templates_section = get_template_code_for_prompt(detected_framework)
+        if templates_section:
+            logger.info(f"📦 Using {detected_framework.value} code templates")
+        else:
+            logger.info(f"ℹ️ No templates for {detected_framework.value}, using generic patterns")
+
         # Build comprehensive prompt
         prompt = f"""You are an expert Python developer. Generate a production-ready web scraper class.
 
 {similar_patterns_text}
+{templates_section}
 {select2_warning}
+{api_section}
+{event_section}
 
 **Municipality:** {schema.get('municipality')}
 **URL:** {url}
@@ -404,7 +515,7 @@ DO NOT use page.select_option() for Select2 dropdowns - it will timeout!
 """
 
         start_time = time.time()
-        response = ai_client.client.chat.completions.create(
+        response = ai_client.client.messages.create(
             model=ai_client.models["powerful"],  # Opus for code generation
             messages=[{"role": "user", "content": prompt}],
             temperature=0.2,
@@ -415,21 +526,21 @@ DO NOT use page.select_option() for Select2 dropdowns - it will timeout!
         usage = response.usage
         cost = cost_tracker.track_call(
             model=ai_client.models["powerful"],
-            input_tokens=usage.prompt_tokens,
-            output_tokens=usage.completion_tokens,
+            input_tokens=usage.input_tokens,
+            output_tokens=usage.output_tokens,
             agent_name=self.name
         )
 
         self._record_action(
             action_type="claude_code_generation",
             description="Generated scraper code with Claude Opus",
-            result=f"Generated {usage.completion_tokens} tokens",
+            result=f"Generated {usage.output_tokens} tokens",
             success=True,
             cost=cost
         )
 
         # Extract code from markdown if present
-        code = response.choices[0].message.content
+        code = response.content[0].text
 
         import re
         code_match = re.search(r'```python\s*(.*?)\s*```', code, re.DOTALL)
@@ -493,7 +604,7 @@ logger = logging.getLogger(__name__)
 Return ONLY the fixed Python code, no explanations.
 """
 
-        response = ai_client.client.chat.completions.create(
+        response = ai_client.client.messages.create(
             model=ai_client.models["balanced"],
             messages=[{"role": "user", "content": prompt}],
             temperature=0.1,
@@ -503,12 +614,12 @@ Return ONLY the fixed Python code, no explanations.
         usage = response.usage
         cost_tracker.track_call(
             model=ai_client.models["balanced"],
-            input_tokens=usage.prompt_tokens,
-            output_tokens=usage.completion_tokens,
+            input_tokens=usage.input_tokens,
+            output_tokens=usage.output_tokens,
             agent_name=f"{self.name}_fix"
         )
 
-        fixed_code = response.choices[0].message.content
+        fixed_code = response.content[0].text
 
         # Extract from markdown
         import re
@@ -549,14 +660,14 @@ Return ONLY the fixed Python code, no explanations.
 
 Generate ONLY the Python test code, no explanations."""
 
-        response = ai_client.client.chat.completions.create(
+        response = ai_client.client.messages.create(
             model=ai_client.models["fast"],
             messages=[{"role": "user", "content": prompt}],
             temperature=0.2,
             max_tokens=2000
         )
 
-        test_code = response.choices[0].message.content
+        test_code = response.content[0].text
 
         # Extract code from markdown if present
         import re
@@ -609,7 +720,7 @@ Generate ONLY the Python test code, no explanations."""
         )
 
         start_time = time.time()
-        response = ai_client.client.chat.completions.create(
+        response = ai_client.client.messages.create(
             model=ai_client.models["balanced"],  # Sonnet for healing
             messages=[{"role": "user", "content": prompt}],
             temperature=0.2,
@@ -620,21 +731,21 @@ Generate ONLY the Python test code, no explanations."""
         usage = response.usage
         cost = cost_tracker.track_call(
             model=ai_client.models["balanced"],
-            input_tokens=usage.prompt_tokens,
-            output_tokens=usage.completion_tokens,
+            input_tokens=usage.input_tokens,
+            output_tokens=usage.output_tokens,
             agent_name=f"{self.name}_healing"
         )
 
         self._record_action(
             action_type="self_healing",
             description="Attempted to fix failing scraper",
-            result=f"Generated {usage.completion_tokens} tokens",
+            result=f"Generated {usage.output_tokens} tokens",
             success=True,
             cost=cost
         )
 
         # Extract code from response
-        healed_code = response.choices[0].message.content
+        healed_code = response.content[0].text
 
         import re
         code_match = re.search(r'```python\s*(.*?)\s*```', healed_code, re.DOTALL)

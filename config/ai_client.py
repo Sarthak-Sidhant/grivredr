@@ -1,48 +1,156 @@
 """
-AI Client for interacting with Claude via MegaLLM API
+AI Client - Unified interface using Anthropic SDK with MegaLLM
+Supports both Anthropic native and LangChain integration
 """
 import os
-import base64
-from openai import OpenAI
+from anthropic import Anthropic
 from dotenv import load_dotenv
 from typing import Optional, List, Dict, Any
+import logging
 
 from utils.ai_cache import AICache
 
 load_dotenv()
+logger = logging.getLogger(__name__)
 
 
 class AIClient:
-    """Unified AI client for Claude models via MegaLLM"""
+    """
+    Unified AI client using Anthropic SDK with MegaLLM backend
+    Compatible with both native Anthropic and LangChain
+    """
 
     def __init__(self, enable_cache: bool = True):
-        self.client = OpenAI(
-            base_url="https://ai.megallm.io/v1",
-            api_key=os.getenv("api_key")
+        """
+        Initialize Anthropic client with MegaLLM endpoint
+
+        Args:
+            enable_cache: Enable AI response caching for cost savings
+        """
+        # Validate API key exists
+        api_key = os.getenv("api_key")
+        if not api_key:
+            raise ValueError(
+                "API key not found. Set 'api_key' environment variable. "
+                "Example: export api_key='your_megallm_api_key'"
+            )
+
+        # Initialize Anthropic client with MegaLLM
+        self.client = Anthropic(
+            base_url="https://ai.megallm.io",
+            api_key=api_key
         )
 
         # Model selection based on task complexity
         self.models = {
-            "fast": "claude-haiku-4-5-20251001",  # $1/$5 - Quick tasks
-            "balanced": "claude-sonnet-4-5-20250929",  # $3/$15 - Most tasks
-            "powerful": "claude-opus-4-5-20251101",  # $5/$25 - Complex reasoning
+            "fast": "claude-haiku-4.5",  # $1/$5 - Quick tasks
+            "balanced": "claude-sonnet-4.5",  # $3/$15 - Most tasks
+            "powerful": "claude-opus-4.5",  # $5/$25 - Complex reasoning
         }
 
         # AI call caching for cost optimization
         self.enable_cache = enable_cache
         self.cache = AICache() if enable_cache else None
 
+        logger.info("✓ Anthropic client initialized with MegaLLM")
+
+    def _create_message(
+        self,
+        prompt: str,
+        model: str = "balanced",
+        max_tokens: int = 4000,
+        temperature: float = 0.1,
+        images: Optional[List[Dict[str, Any]]] = None
+    ) -> str:
+        """
+        Create a message using Anthropic SDK
+
+        Args:
+            prompt: Text prompt
+            model: Model tier (fast/balanced/powerful)
+            max_tokens: Maximum tokens to generate
+            temperature: Sampling temperature
+            images: Optional list of images (base64 encoded)
+
+        Returns:
+            Response text
+        """
+        # Check cache first
+        cache_key = f"{prompt}_{model}"
+        if self.cache and not images:
+            cached = self.cache.get(prompt=prompt, model=self.models[model])
+            if cached:
+                logger.debug(f"Cache hit for model={model}")
+                return cached
+
+        # Build content array
+        content = []
+
+        # Add images if provided
+        if images:
+            for img in images:
+                content.append({
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": img.get("media_type", "image/png"),
+                        "data": img["data"]
+                    }
+                })
+
+        # Add text prompt
+        content.append({
+            "type": "text",
+            "text": prompt
+        })
+
+        # Create message with Anthropic SDK
+        try:
+            message = self.client.messages.create(
+                model=self.models[model],
+                max_tokens=max_tokens,
+                temperature=temperature,
+                messages=[{
+                    "role": "user",
+                    "content": content
+                }]
+            )
+
+            # Extract text from response
+            response_text = message.content[0].text
+
+            # Cache response (if no images for simpler caching)
+            if self.cache and not images:
+                self.cache.set(
+                    prompt=prompt,
+                    model=self.models[model],
+                    response=response_text,
+                    ttl_hours=24
+                )
+
+            return response_text
+
+        except Exception as e:
+            logger.error(f"Anthropic API error: {e}")
+            raise
+
     def analyze_website_structure(
         self,
         screenshot_base64: str,
         url: str,
         html_snippet: Optional[str] = None
-    ) -> Dict[str, Any]:
+    ) -> str:
         """
         Analyze website structure using Claude Vision
-        Returns form fields, navigation steps, and structure info
+
+        Args:
+            screenshot_base64: Base64 encoded screenshot
+            url: Website URL
+            html_snippet: Optional HTML context
+
+        Returns:
+            JSON string with form analysis
         """
-        # Check cache first
         prompt = f"""Analyze this grievance/complaint form webpage from {url}.
 
 Your task:
@@ -73,54 +181,18 @@ Provide response in this JSON format:
 {f"HTML Context: {html_snippet}" if html_snippet else ""}
 """
 
-        if self.cache:
-            cached_response = self.cache.get(
-                prompt=prompt,
-                model=self.models["balanced"],
-                image_data=screenshot_base64
-            )
-            if cached_response:
-                return cached_response
+        images = [{
+            "media_type": "image/png",
+            "data": screenshot_base64
+        }]
 
-        # Cache miss - make AI call
-        messages = [
-            {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "image_url",
-                        "image_url": {
-                            "url": f"data:image/png;base64,{screenshot_base64}"
-                        }
-                    },
-                    {
-                        "type": "text",
-                        "text": prompt
-                    }
-                ]
-            }
-        ]
-
-        response = self.client.chat.completions.create(
-            model=self.models["balanced"],
-            messages=messages,
+        return self._create_message(
+            prompt=prompt,
+            model="balanced",
+            max_tokens=4000,
             temperature=0.1,
-            max_tokens=4000
+            images=images
         )
-
-        result = response.choices[0].message.content
-
-        # Store in cache
-        if self.cache:
-            self.cache.set(
-                prompt=prompt,
-                model=self.models["balanced"],
-                response=result,
-                ttl_hours=24,
-                image_data=screenshot_base64
-            )
-
-        return result
 
     def generate_scraper_code(
         self,
@@ -129,7 +201,15 @@ Provide response in this JSON format:
         municipality_name: str
     ) -> str:
         """
-        Generate reusable Python scraper code based on website analysis
+        Generate reusable Python scraper code
+
+        Args:
+            website_analysis: Analyzed form structure
+            url: Form URL
+            municipality_name: Municipality identifier
+
+        Returns:
+            Complete Python scraper code
         """
         prompt = f"""You are an expert Python automation engineer. Generate a production-ready Playwright scraper for this grievance form.
 
@@ -159,32 +239,12 @@ Website Analysis:
    - For multi-step forms: verify page transition completed before proceeding
 
 4. **Selector Fallbacks:**
-   Every element interaction must have fallback selectors:
-   ```python
-   # GOOD - Multiple fallback strategies:
-   element = await page.query_selector("#name") or \
-             await page.query_selector("[name='name']") or \
-             await page.query_selector("input[placeholder*='name' i]")
-
-   # BAD - Single point of failure:
-   element = await page.query_selector("#name")
-   ```
+   Every element interaction must have fallback selectors
 
 5. **Test Mode Support:**
    - Include async def run_test_mode(self, test_data: dict) -> dict
    - In test mode: validate field presence but DON'T submit
    - Return structured test results with field coverage
-
-6. **Structured Error Responses:**
-   ```python
-   return {{
-       "success": False,
-       "error": "Could not find submit button",
-       "attempted_selectors": ["#submit", "button[type='submit']"],
-       "page_html": page_html[:500],  # For debugging
-       "screenshot": screenshot_path
-   }}
-   ```
 
 Generate a complete Python class that:
 1. Uses Playwright async API
@@ -200,7 +260,6 @@ Requirements:
 - Class name: {municipality_name.title().replace(' ', '')}Scraper
 - Method: async def submit_grievance(self, data: dict) -> dict
 - Include: async def run_test_mode(self, test_data: dict) -> dict
-- Input data format: {{"name": "...", "phone": "...", "complaint": "...", "category": "...", "file_path": "..."}}
 - Use headless=False for debugging, make it configurable
 - Add stealth mode to avoid detection
 - Log all actions for debugging
@@ -208,14 +267,12 @@ Requirements:
 Return ONLY the Python code, no explanations. Make it production-ready with DEFENSIVE patterns.
 """
 
-        response = self.client.chat.completions.create(
-            model=self.models["powerful"],  # Use powerful model for code generation
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.2,
-            max_tokens=8000
+        return self._create_message(
+            prompt=prompt,
+            model="powerful",
+            max_tokens=8000,
+            temperature=0.2
         )
-
-        return response.choices[0].message.content
 
     def improve_scraper_with_feedback(
         self,
@@ -225,14 +282,16 @@ Return ONLY the Python code, no explanations. Make it production-ready with DEFE
     ) -> str:
         """
         Fix scraper based on execution errors
+
+        Args:
+            original_code: Original scraper code
+            error_log: Execution error details
+            screenshot_base64: Optional error screenshot
+
+        Returns:
+            Fixed scraper code
         """
-        messages = [
-            {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "text",
-                        "text": f"""This scraper failed. Fix it based on the error:
+        prompt = f"""This scraper failed. Fix it based on the error:
 
 Original Code:
 ```python
@@ -244,46 +303,40 @@ Error Log:
 
 Return the complete fixed code. Identify the issue and resolve it.
 """
-                    }
-                ]
-            }
-        ]
 
+        images = None
         if screenshot_base64:
-            messages[0]["content"].insert(1, {
-                "type": "image_url",
-                "image_url": {"url": f"data:image/png;base64,{screenshot_base64}"}
-            })
+            images = [{
+                "media_type": "image/png",
+                "data": screenshot_base64
+            }]
 
-        response = self.client.chat.completions.create(
-            model=self.models["balanced"],
-            messages=messages,
+        return self._create_message(
+            prompt=prompt,
+            model="balanced",
+            max_tokens=8000,
             temperature=0.2,
-            max_tokens=8000
+            images=images
         )
-
-        return response.choices[0].message.content
 
     def extract_status_from_page(
         self,
         screenshot_base64: str,
         html_text: str,
         tracking_id: str
-    ) -> Dict[str, Any]:
+    ) -> str:
         """
         Extract grievance status from status check page
+
+        Args:
+            screenshot_base64: Page screenshot
+            html_text: Page HTML
+            tracking_id: Tracking/reference ID
+
+        Returns:
+            JSON with extracted status
         """
-        messages = [
-            {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "image_url",
-                        "image_url": {"url": f"data:image/png;base64,{screenshot_base64}"}
-                    },
-                    {
-                        "type": "text",
-                        "text": f"""Extract grievance status for tracking ID: {tracking_id}
+        prompt = f"""Extract grievance status for tracking ID: {tracking_id}
 
 HTML Text:
 {html_text[:2000]}
@@ -296,19 +349,43 @@ Return JSON:
     "tracking_id": "{tracking_id}"
 }}
 """
-                    }
-                ]
-            }
-        ]
 
-        response = self.client.chat.completions.create(
-            model=self.models["fast"],  # Fast model for extraction
-            messages=messages,
+        images = [{
+            "media_type": "image/png",
+            "data": screenshot_base64
+        }]
+
+        return self._create_message(
+            prompt=prompt,
+            model="fast",
+            max_tokens=500,
             temperature=0.1,
-            max_tokens=500
+            images=images
         )
 
-        return response.choices[0].message.content
+    def get_langchain_chat_model(self, model_tier: str = "balanced"):
+        """
+        Get LangChain-compatible Anthropic chat model
+
+        Args:
+            model_tier: Model tier (fast/balanced/powerful)
+
+        Returns:
+            ChatAnthropic instance
+        """
+        try:
+            from langchain_anthropic import ChatAnthropic
+
+            return ChatAnthropic(
+                model=self.models[model_tier],
+                anthropic_api_key=os.getenv("api_key"),
+                anthropic_api_url="https://ai.megallm.io",
+                max_tokens=4000,
+                temperature=0.1
+            )
+        except ImportError:
+            logger.warning("langchain-anthropic not installed")
+            return None
 
     def get_cache_stats(self) -> Dict[str, Any]:
         """

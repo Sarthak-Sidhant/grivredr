@@ -33,6 +33,14 @@ Examples:
     parser.add_argument('--headless', action='store_true', help='Run browser in headless mode')
     parser.add_argument('--no-recording', action='store_true', help='Disable human recording fallback')
 
+    # Hybrid Discovery Options
+    parser.add_argument('--no-hybrid', action='store_true',
+                       help='Disable hybrid discovery (use Playwright only)')
+    parser.add_argument('--browser-use-first', action='store_true',
+                       help='Try Browser Use AI first instead of Playwright')
+    parser.add_argument('--no-browser-use-fallback', action='store_true',
+                       help='Disable Browser Use fallback (Playwright only, even on failure)')
+
     args = parser.parse_args()
 
     municipality = args.portal_name
@@ -68,16 +76,40 @@ Examples:
     # Human recording fallback (enabled by default unless --no-recording)
     enable_recording = not args.no_recording
 
+    # Hybrid discovery configuration
+    enable_hybrid = not args.no_hybrid
+    use_browser_use_first = args.browser_use_first
+    browser_use_on_failure = not args.no_browser_use_fallback
+
+    # Import DiscoveryConfig if hybrid is enabled
+    hybrid_config = None
+    if enable_hybrid:
+        from agents.hybrid_discovery_strategy import DiscoveryConfig
+        hybrid_config = DiscoveryConfig(
+            use_browser_use_first=use_browser_use_first,
+            browser_use_on_failure=browser_use_on_failure,
+            max_playwright_attempts=2
+        )
+
     print()
     print("🚀 Starting training...")
     if enable_recording:
         print("   (Human recording fallback enabled)")
+    if enable_hybrid:
+        strategy_desc = "Browser Use → Playwright" if use_browser_use_first else "Playwright → Browser Use"
+        print(f"   (Hybrid discovery enabled: {strategy_desc})")
+        if not browser_use_on_failure:
+            print("   (Browser Use fallback disabled)")
+    else:
+        print("   (Playwright-only discovery)")
     print()
 
     # Create orchestrator
     orchestrator = Orchestrator(
         headless=args.headless,
-        enable_human_recording=enable_recording
+        enable_human_recording=enable_recording,
+        enable_hybrid_discovery=enable_hybrid,
+        hybrid_config=hybrid_config
     )
 
     # Run training

@@ -270,8 +270,8 @@ class JSRuntimeMonitor:
                     await input_elem.type("test", delay=50)
                     await asyncio.sleep(0.2)
                     await input_elem.blur()
-                except:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Input interaction failed: {e}")
 
             # Find and click dropdowns to see options
             selects = await page.query_selector_all(f"{form_selector} select")
@@ -287,8 +287,8 @@ class JSRuntimeMonitor:
                         # Select second option (first is usually placeholder)
                         await options[1].click()
                         await asyncio.sleep(0.5)
-                except:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Select interaction failed: {e}")
 
             logger.info("✓ Form interaction complete")
 

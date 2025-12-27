@@ -12,6 +12,7 @@ from pathlib import Path
 
 from agents.base_agent import cost_tracker
 from agents.form_discovery_agent import FormDiscoveryAgent
+from agents.hybrid_discovery_strategy import HybridDiscoveryStrategy, DiscoveryConfig
 from agents.test_agent import TestValidationAgent
 from agents.js_analyzer_agent import JavaScriptAnalyzerAgent
 from agents.code_generator_agent import CodeGeneratorAgent
@@ -67,12 +68,23 @@ class Orchestrator:
         self,
         headless: bool = False,
         enable_human_recording: bool = False,
-        on_human_needed: Optional[Callable] = None
+        on_human_needed: Optional[Callable] = None,
+        enable_hybrid_discovery: bool = True,
+        hybrid_config: Optional[DiscoveryConfig] = None
     ):
         self.headless = headless
         self.enable_human_recording = enable_human_recording
+        self.enable_hybrid_discovery = enable_hybrid_discovery
+        self.hybrid_config = hybrid_config or DiscoveryConfig(
+            use_browser_use_first=False,     # Try Playwright first (fast & cheap)
+            browser_use_on_failure=True,     # Use AI if confidence < 0.7
+            max_playwright_attempts=2        # 2 attempts before AI
+        )
         self.sessions: Dict[str, TrainingSession] = {}
         self.active_session: Optional[TrainingSession] = None
+
+        # Dashboard/UI support (optional)
+        self.dashboard_enabled = False
 
         # Callbacks for UI updates
         self.on_status_update: Optional[Callable] = None
@@ -83,6 +95,8 @@ class Orchestrator:
         # Results directory
         self.results_dir = Path("data/training_sessions")
         self.results_dir.mkdir(parents=True, exist_ok=True)
+
+        logger.info(f"🚀 Orchestrator initialized (hybrid_discovery={'enabled' if enable_hybrid_discovery else 'disabled'})")
 
     async def train_municipality(
         self,
@@ -221,27 +235,71 @@ class Orchestrator:
         municipality: str,
         hints: Optional[Dict[str, Any]]
     ) -> Dict[str, Any]:
-        """Phase 1: Run form discovery agent"""
+        """Phase 1: Run form discovery agent (with optional hybrid strategy)"""
 
-        agent = FormDiscoveryAgent(headless=self.headless)
+        if self.enable_hybrid_discovery:
+            # Use smart hybrid strategy (Playwright first, Browser Use if needed)
+            logger.info("🔬 Using Hybrid Discovery Strategy (Playwright + Browser Use AI)")
 
-        # Set up callbacks
-        agent.on_status_change = self._agent_status_callback
-        agent.on_action = self._agent_action_callback
-        agent.on_human_needed = self._human_needed_callback
+            strategy = HybridDiscoveryStrategy(config=self.hybrid_config)
 
-        task = {
-            "url": url,
-            "municipality": municipality,
-            "hints": hints or {}
-        }
+            # Run discovery
+            hybrid_result = await strategy.discover(url=url, municipality=municipality)
 
-        result = await agent.execute(task)
+            # Extract the merged result (best of both worlds)
+            result = hybrid_result.get('merged', {})
 
-        session.agent_attempts["discovery"] = len(agent.attempts)
-        session.total_cost += agent.get_total_cost()
+            # Add metadata about strategy
+            result['discovery_metadata'] = {
+                'strategy': 'hybrid',
+                'strategies_used': hybrid_result.get('strategy_used', []),
+                'confidence': hybrid_result.get('confidence', 0.0),
+                'browser_use_needed': hybrid_result.get('needs_browser_use', False)
+            }
 
-        return result
+            logger.info(f"✅ Hybrid discovery complete:")
+            logger.info(f"   - Strategies used: {', '.join(hybrid_result.get('strategy_used', []))}")
+            logger.info(f"   - Confidence: {hybrid_result.get('confidence', 0.0):.2f}")
+            logger.info(f"   - Browser Use needed: {hybrid_result.get('needs_browser_use', False)}")
+
+            # Note: HybridDiscoveryStrategy doesn't track costs the same way
+            # We'll estimate based on strategy used
+            if 'browser_use' in hybrid_result.get('strategy_used', []):
+                session.total_cost += 0.52  # Playwright ($0.02) + Browser Use ($0.50)
+            else:
+                session.total_cost += 0.02  # Playwright only
+
+            session.agent_attempts["discovery"] = 1
+
+            # Ensure result has success flag
+            if 'success' not in result:
+                result['success'] = True
+
+            return result
+
+        else:
+            # Traditional Playwright-only discovery
+            logger.info("📋 Using Standard Playwright Discovery")
+
+            agent = FormDiscoveryAgent(headless=self.headless)
+
+            # Set up callbacks
+            agent.on_status_change = self._agent_status_callback
+            agent.on_action = self._agent_action_callback
+            agent.on_human_needed = self._human_needed_callback
+
+            task = {
+                "url": url,
+                "municipality": municipality,
+                "hints": hints or {}
+            }
+
+            result = await agent.execute(task)
+
+            session.agent_attempts["discovery"] = len(agent.attempts)
+            session.total_cost += agent.get_total_cost()
+
+            return result
 
     async def _run_js_analysis(
         self,
@@ -740,6 +798,24 @@ class Orchestrator:
         if '.' in name:
             name = name.split('.')[-1]
         return name
+
+    def emit_update(self, session_id: str, phase: str, progress: int, message: str):
+        """Emit progress update (for dashboard/UI integration)"""
+        if self.on_status_update:
+            asyncio.create_task(self.on_status_update(session_id, {
+                'phase': phase,
+                'progress': progress,
+                'message': message
+            }))
+
+    def emit_complete(self, session_id: str, success: bool, result: Dict[str, Any]):
+        """Emit completion event (for dashboard/UI integration)"""
+        if self.on_status_update:
+            asyncio.create_task(self.on_status_update(session_id, {
+                'phase': 'complete',
+                'success': success,
+                'result': result
+            }))
 
 
 # For testing

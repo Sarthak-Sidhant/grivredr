@@ -721,15 +721,17 @@ class HumanRecorderAgent:
             # Ask Claude what's happening
             from config.ai_client import ai_client
 
-            response = ai_client.client.chat.completions.create(
+            response = ai_client.client.messages.create(
                 model=ai_client.models["fast"],  # Use Haiku for speed
                 messages=[{
                     "role": "user",
                     "content": [
                         {
-                            "type": "image_url",
-                            "image_url": {
-                                "url": f"data:image/png;base64,{screenshot_base64}"
+                            "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": "image/png",
+                            "data": screenshot_base64
                             }
                         },
                         {
@@ -752,7 +754,7 @@ Be concise and helpful."""
                 max_tokens=200
             )
 
-            note = response.choices[0].message.content
+            note = response.content[0].text
             self.claude_notes.append({
                 'timestamp': datetime.now().timestamp(),
                 'action_count': self.action_count,

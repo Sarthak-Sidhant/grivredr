@@ -98,3 +98,107 @@ Response format:
 
 Return only valid JSON.
 """
+
+
+API_AWARE_GENERATION_PROMPT = """You are generating a Python web scraper with DIRECT API CALLS when possible.
+
+CAPTURED NETWORK ACTIVITY:
+{api_calls}
+
+FORM ANALYSIS:
+{form_analysis}
+
+EVENT LISTENERS DETECTED:
+{event_listeners}
+
+CRITICAL REQUIREMENTS:
+
+1. **PREFER DIRECT API CALLS OVER BROWSER:**
+   - If you see API calls like GET /api/getDistricts?stateId=12, USE httpx/aiohttp directly
+   - Only use Playwright if:
+     * APIs require complex authentication (session cookies, CSRF tokens)
+     * JavaScript computes values client-side
+     * Form has CAPTCHA or OTP
+
+2. **GENERATE HYBRID CODE:**
+   ```python
+   import httpx
+   from playwright.async_api import async_playwright
+
+   class ScraperName:
+       async def submit_via_api(self, data):
+           \"\"\"Direct API submission (fast, no browser)\"\"\"
+           async with httpx.AsyncClient() as client:
+               # Use captured API calls
+               response = await client.post(
+                   'actual_endpoint_from_network_tab',
+                   json=data,
+                   headers=captured_headers
+               )
+               return response.json()
+
+       async def submit_via_browser(self, data):
+           \"\"\"Browser fallback if API doesn't work\"\"\"
+           # Playwright code here
+   ```
+
+3. **HANDLE EVENT LISTENERS:**
+   - For fields with 'blur' listeners: `await field.focus()` then `await field.blur()`
+   - For fields with 'input' listeners: Type with delay to trigger validation
+   - Example:
+   ```python
+   # Field has blur validation
+   await page.fill('#email', email)
+   await page.focus('#email')
+   await asyncio.sleep(0.1)
+   await page.blur('#email')  # Triggers validation
+   await asyncio.sleep(0.3)  # Wait for validation
+   ```
+
+4. **API CALL EXAMPLES FROM NETWORK TAB:**
+{api_call_examples}
+
+Generate code that:
+- Tries direct API first (if safe)
+- Falls back to browser if API fails
+- Handles all event listeners properly
+- Includes proper error handling
+
+Return ONLY the complete Python code.
+"""
+
+
+FLICKER_FIELD_TEMPLATE = """
+async def _flicker_field(self, page: Page, selector: str, value: str, has_blur: bool = False):
+    \"\"\"
+    Fill field and trigger validation events if needed
+
+    Args:
+        page: Playwright page
+        selector: Field selector
+        value: Value to fill
+        has_blur: Whether field has blur listener
+    \"\"\"
+    try:
+        element = await page.wait_for_selector(selector, state='visible', timeout=5000)
+
+        # Focus to trigger focus events
+        await element.focus()
+        await asyncio.sleep(0.1)
+
+        # Fill the value
+        await element.fill(value)
+        await asyncio.sleep(0.1)
+
+        # If has blur listener, trigger it
+        if has_blur:
+            await element.blur()
+            await asyncio.sleep(0.3)  # Wait for validation
+            logger.info(f"Triggered blur validation for {selector}")
+
+        return True
+
+    except Exception as e:
+        logger.error(f"Failed to fill {selector}: {e}")
+        return False
+"""
