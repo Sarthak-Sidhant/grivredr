@@ -32,6 +32,7 @@ class FormField:
     depends_on: Optional[str] = None  # For cascading dropdowns
     validation_pattern: Optional[str] = None
     error_message: Optional[str] = None
+    dropdown_type: str = "plain_html"  # plain_html, select2, ant_design, bootstrap, material_ui
 
 
 @dataclass
@@ -59,10 +60,12 @@ class FormDiscoveryAgent(BaseAgent):
     Agent that discovers form structure through iterative exploration
     """
 
-    def __init__(self, headless: bool = False, enable_js_monitoring: bool = True):
+    def __init__(self, headless: bool = False, enable_js_monitoring: bool = True, browser_type: str = "firefox", skip_visual_analysis: bool = False):
         super().__init__(name="FormDiscoveryAgent", max_attempts=3)
         self.headless = headless
         self.enable_js_monitoring = enable_js_monitoring
+        self.browser_type = browser_type  # "chromium", "firefox", or "webkit"
+        self.skip_visual_analysis = skip_visual_analysis  # Skip AI vision analysis (faster, cheaper)
         self.browser: Optional[Browser] = None
         self.playwright = None
         self.screenshots_dir = Path("outputs/screenshots")
@@ -84,10 +87,18 @@ class FormDiscoveryAgent(BaseAgent):
         await self._init_browser()
 
         try:
-            # Phase 1: Initial visual analysis
-            visual_analysis = await self._visual_analysis_phase(url, municipality)
-            if not visual_analysis["success"]:
-                return visual_analysis
+            # Phase 1: Initial visual analysis (can be skipped for faster/cheaper operation)
+            if self.skip_visual_analysis:
+                logger.info("⏩ Skipping visual analysis (faster mode)")
+                # Create a basic schema from DOM exploration instead
+                visual_analysis = {
+                    "success": True,
+                    "initial_schema": FormSchema(url=url, municipality=municipality)
+                }
+            else:
+                visual_analysis = await self._visual_analysis_phase(url, municipality)
+                if not visual_analysis["success"]:
+                    return visual_analysis
 
             # Phase 2: Interactive exploration (with JS monitoring)
             interactive_analysis = await self._interactive_exploration_phase(
@@ -141,12 +152,19 @@ class FormDiscoveryAgent(BaseAgent):
         """Initialize Playwright browser"""
         if not self.playwright:
             self.playwright = await async_playwright().start()
-            self.browser = await self.playwright.chromium.launch(
+            # Select browser type based on configuration
+            if self.browser_type == "firefox":
+                browser_launcher = self.playwright.firefox
+            elif self.browser_type == "webkit":
+                browser_launcher = self.playwright.webkit
+            else:
+                browser_launcher = self.playwright.chromium
+            
+            self.browser = await browser_launcher.launch(
                 headless=self.headless,
                 args=[
-                    '--disable-blink-features=AutomationControlled',
                     '--no-sandbox'
-                ]
+                ] if self.browser_type == "chromium" else []
             )
 
     async def _cleanup_browser(self):
@@ -157,6 +175,400 @@ class FormDiscoveryAgent(BaseAgent):
         if self.playwright:
             await self.playwright.stop()
             self.playwright = None
+
+    # =========================================================================
+    # UNIVERSAL DROPDOWN HANDLING METHODS
+    # =========================================================================
+
+    async def _detect_dropdown_type(self, page: Page, selector: str) -> str:
+        """
+        Detect the type of dropdown (Select2, Ant Design, Bootstrap, etc.)
+        
+        Returns: 'select2', 'ant_design', 'bootstrap', 'material_ui', or 'plain_html'
+        """
+        try:
+            dropdown_type = await page.evaluate("""
+                (selector) => {
+                    const el = document.querySelector(selector);
+                    if (!el) return 'plain_html';
+                    
+                    // Check element and parent classes
+                    const elClass = el.className || '';
+                    const parentClass = el.parentElement?.className || '';
+                    const grandparentClass = el.parentElement?.parentElement?.className || '';
+                    const allClasses = `${elClass} ${parentClass} ${grandparentClass}`.toLowerCase();
+                    
+                    // Check for Select2
+                    if (allClasses.includes('select2') || 
+                        el.classList.contains('select2-hidden-accessible') ||
+                        document.querySelector(`[data-select2-id="${el.id}"]`) ||
+                        el.parentElement?.querySelector('.select2-container')) {
+                        return 'select2';
+                    }
+                    
+                    // Check for Ant Design
+                    if (allClasses.includes('ant-select') || allClasses.includes('ant-')) {
+                        return 'ant_design';
+                    }
+                    
+                    // Check for Material UI
+                    if (allClasses.includes('mui') || allClasses.includes('MuiSelect')) {
+                        return 'material_ui';
+                    }
+                    
+                    // Check for Bootstrap Select
+                    if (allClasses.includes('bootstrap-select') || allClasses.includes('selectpicker')) {
+                        return 'bootstrap';
+                    }
+                    
+                    // Check if jQuery and Select2 plugin exist for this element
+                    if (typeof $ !== 'undefined' && $.fn && $.fn.select2) {
+                        try {
+                            if ($(el).data('select2')) {
+                                return 'select2';
+                            }
+                        } catch(e) {}
+                    }
+                    
+                    return 'plain_html';
+                }
+            """, selector)
+            return dropdown_type
+        except Exception as e:
+            logger.debug(f"Dropdown type detection failed for {selector}: {e}")
+            return 'plain_html'
+
+    async def _select_dropdown_value(
+        self, 
+        page: Page, 
+        selector: str, 
+        value: str, 
+        dropdown_type: str = None,
+        wait_after: float = 1.0
+    ) -> bool:
+        """
+        Universal dropdown selection that handles all dropdown types.
+        
+        Args:
+            page: Playwright page
+            selector: CSS selector for the dropdown
+            value: Value or text to select
+            dropdown_type: Optional type override (auto-detected if None)
+            wait_after: Seconds to wait after selection (for cascading)
+            
+        Returns:
+            True if selection was successful
+        """
+        # Auto-detect dropdown type if not provided
+        if dropdown_type is None:
+            dropdown_type = await self._detect_dropdown_type(page, selector)
+        
+        logger.debug(f"Selecting '{value}' in {dropdown_type} dropdown: {selector}")
+        
+        try:
+            if dropdown_type == 'select2':
+                return await self._select_select2_value(page, selector, value, wait_after)
+            elif dropdown_type == 'ant_design':
+                return await self._select_ant_design_value(page, selector, value, wait_after)
+            elif dropdown_type == 'material_ui':
+                return await self._select_material_ui_value(page, selector, value, wait_after)
+            elif dropdown_type == 'bootstrap':
+                return await self._select_bootstrap_value(page, selector, value, wait_after)
+            else:
+                return await self._select_plain_html_value(page, selector, value, wait_after)
+        except Exception as e:
+            logger.warning(f"Primary selection failed for {selector}, trying fallback: {e}")
+            # Fallback: try plain HTML as last resort
+            try:
+                return await self._select_plain_html_value(page, selector, value, wait_after)
+            except:
+                return False
+
+    async def _select_select2_value(
+        self, 
+        page: Page, 
+        selector: str, 
+        value: str,
+        wait_after: float = 1.0
+    ) -> bool:
+        """
+        Select value in Select2 dropdown using jQuery.
+        CRITICAL: Regular select_option() will NOT work with Select2!
+        """
+        try:
+            # Strategy 1: Use jQuery to set value and trigger change
+            result = await page.evaluate("""
+                (args) => {
+                    const select = document.querySelector(args.selector);
+                    if (!select) return { success: false, error: 'Element not found' };
+                    
+                    // Check if jQuery and Select2 are available
+                    if (typeof $ === 'undefined') {
+                        return { success: false, error: 'jQuery not available' };
+                    }
+                    
+                    try {
+                        const $select = $(select);
+                        
+                        // Try to find the option by value first
+                        let optionValue = args.value;
+                        
+                        // If value doesn't exist, try to find by text
+                        const options = $select.find('option');
+                        let found = false;
+                        options.each(function() {
+                            if (this.value === args.value) {
+                                found = true;
+                                optionValue = this.value;
+                            } else if (this.text.toLowerCase().includes(args.value.toLowerCase())) {
+                                found = true;
+                                optionValue = this.value;
+                            }
+                        });
+                        
+                        if (!found && options.length > 1) {
+                            // Fallback: select first non-empty option
+                            for (let i = 0; i < options.length; i++) {
+                                if (options[i].value && options[i].value !== '') {
+                                    optionValue = options[i].value;
+                                    break;
+                                }
+                            }
+                        }
+                        
+                        // Set value and trigger change event
+                        $select.val(optionValue);
+                        $select.trigger('change');
+                        $select.trigger('change.select2');
+                        
+                        return { success: true, selectedValue: optionValue };
+                    } catch (e) {
+                        return { success: false, error: e.message };
+                    }
+                }
+            """, {"selector": selector, "value": value})
+            
+            if result.get('success'):
+                await asyncio.sleep(wait_after)
+                logger.debug(f"Select2 selection successful: {result.get('selectedValue')}")
+                return True
+            
+            # Strategy 2: Click to open, then select visually
+            logger.debug("jQuery approach failed, trying click approach...")
+            
+            # Find and click the Select2 container
+            container_selectors = [
+                f"{selector} + .select2-container",
+                f"span.select2-container[data-select2-id*='{selector.strip('#')}']",
+                f"#{selector.strip('#')}_container"
+            ]
+            
+            for container_sel in container_selectors:
+                try:
+                    container = page.locator(container_sel).first
+                    if await container.count() > 0:
+                        await container.click(timeout=2000)
+                        await asyncio.sleep(0.5)
+                        
+                        # Type to search if searchable
+                        search_input = page.locator(".select2-search__field, .select2-search input").first
+                        if await search_input.count() > 0:
+                            await search_input.fill(value[:10])  # First 10 chars for search
+                            await asyncio.sleep(0.5)
+                        
+                        # Click first matching result
+                        results = page.locator(".select2-results__option:not(.select2-results__option--disabled)")
+                        if await results.count() > 0:
+                            await results.first.click()
+                            await asyncio.sleep(wait_after)
+                            return True
+                except Exception as inner_e:
+                    logger.debug(f"Container click failed: {inner_e}")
+                    continue
+            
+            # Close dropdown if still open
+            await page.keyboard.press("Escape")
+            return False
+            
+        except Exception as e:
+            logger.warning(f"Select2 selection failed for {selector}: {e}")
+            await page.keyboard.press("Escape")
+            return False
+
+    async def _select_ant_design_value(
+        self, 
+        page: Page, 
+        selector: str, 
+        value: str,
+        wait_after: float = 1.0
+    ) -> bool:
+        """Select value in Ant Design dropdown"""
+        try:
+            element = page.locator(selector).first
+            
+            # Find the ant-select wrapper and click to open
+            wrapper = element.locator("xpath=ancestor::div[contains(@class,'ant-select')]").first
+            if await wrapper.count() == 0:
+                wrapper = page.locator(f".ant-select").filter(has=element).first
+            
+            if await wrapper.count() > 0:
+                await wrapper.click(force=True)
+                await asyncio.sleep(0.8)
+                
+                # Find visible dropdown
+                dropdowns = page.locator(".ant-select-dropdown")
+                for i in range(await dropdowns.count()):
+                    dd = dropdowns.nth(i)
+                    if await dd.is_visible():
+                        # Find matching option
+                        options = dd.locator(".ant-select-item-option")
+                        for j in range(await options.count()):
+                            opt = options.nth(j)
+                            text = await opt.text_content()
+                            if text and value.lower() in text.lower():
+                                await opt.click()
+                                await asyncio.sleep(wait_after)
+                                return True
+                        
+                        # Fallback: first available option
+                        if await options.count() > 0:
+                            await options.first.click()
+                            await asyncio.sleep(wait_after)
+                            return True
+            
+            await page.keyboard.press("Escape")
+            return False
+            
+        except Exception as e:
+            logger.warning(f"Ant Design selection failed for {selector}: {e}")
+            await page.keyboard.press("Escape")
+            return False
+
+    async def _select_material_ui_value(
+        self, 
+        page: Page, 
+        selector: str, 
+        value: str,
+        wait_after: float = 1.0
+    ) -> bool:
+        """Select value in Material UI dropdown"""
+        try:
+            element = page.locator(selector).first
+            await element.click()
+            await asyncio.sleep(0.5)
+            
+            # MUI uses a portal for dropdown, find by role
+            options = page.locator("[role='listbox'] [role='option'], .MuiMenu-list li")
+            for i in range(await options.count()):
+                opt = options.nth(i)
+                text = await opt.text_content()
+                if text and value.lower() in text.lower():
+                    await opt.click()
+                    await asyncio.sleep(wait_after)
+                    return True
+            
+            # Fallback: first option
+            if await options.count() > 0:
+                await options.first.click()
+                await asyncio.sleep(wait_after)
+                return True
+            
+            await page.keyboard.press("Escape")
+            return False
+            
+        except Exception as e:
+            logger.warning(f"Material UI selection failed for {selector}: {e}")
+            await page.keyboard.press("Escape")
+            return False
+
+    async def _select_bootstrap_value(
+        self, 
+        page: Page, 
+        selector: str, 
+        value: str,
+        wait_after: float = 1.0
+    ) -> bool:
+        """Select value in Bootstrap Select dropdown"""
+        try:
+            # Try jQuery approach first for bootstrap-select
+            result = await page.evaluate("""
+                (args) => {
+                    const select = document.querySelector(args.selector);
+                    if (select && typeof $ !== 'undefined' && $.fn.selectpicker) {
+                        $(select).selectpicker('val', args.value);
+                        $(select).trigger('change');
+                        return true;
+                    }
+                    return false;
+                }
+            """, {"selector": selector, "value": value})
+            
+            if result:
+                await asyncio.sleep(wait_after)
+                return True
+            
+            # Fallback to plain HTML
+            return await self._select_plain_html_value(page, selector, value, wait_after)
+            
+        except Exception as e:
+            logger.warning(f"Bootstrap selection failed for {selector}: {e}")
+            return False
+
+    async def _select_plain_html_value(
+        self, 
+        page: Page, 
+        selector: str, 
+        value: str,
+        wait_after: float = 1.0
+    ) -> bool:
+        """Select value in plain HTML select element"""
+        try:
+            # Strategy 1: Try by value
+            try:
+                await page.select_option(selector, value=value, timeout=3000)
+                await asyncio.sleep(wait_after)
+                return True
+            except:
+                pass
+            
+            # Strategy 2: Try by label (text content)
+            try:
+                await page.select_option(selector, label=value, timeout=3000)
+                await asyncio.sleep(wait_after)
+                return True
+            except:
+                pass
+            
+            # Strategy 3: Find option with partial text match
+            options = await page.evaluate("""
+                (selector) => {
+                    const select = document.querySelector(selector);
+                    if (!select) return [];
+                    return Array.from(select.options).map(o => ({
+                        value: o.value,
+                        text: o.text
+                    }));
+                }
+            """, selector)
+            
+            for opt in options:
+                if opt['text'] and value.lower() in opt['text'].lower():
+                    await page.select_option(selector, value=opt['value'], timeout=3000)
+                    await asyncio.sleep(wait_after)
+                    return True
+            
+            # Strategy 4: Select first non-empty option as fallback
+            for opt in options:
+                if opt['value'] and opt['value'] != '' and opt['text'] and 'select' not in opt['text'].lower():
+                    await page.select_option(selector, value=opt['value'], timeout=3000)
+                    await asyncio.sleep(wait_after)
+                    return True
+            
+            return False
+            
+        except Exception as e:
+            logger.warning(f"Plain HTML selection failed for {selector}: {e}")
+            return False
 
     async def _visual_analysis_phase(
         self,
@@ -462,7 +874,7 @@ Return detailed JSON:
             await context.close()
 
     async def _explore_dropdowns(self, page: Page, schema: FormSchema):
-        """Click dropdowns to see their options - handles both standard and Select2 dropdowns"""
+        """Click dropdowns to see their options - handles Ant Design, Select2, and standard dropdowns"""
         for field in schema.fields:
             if field.type == "dropdown" and field.selector:
                 try:
@@ -473,74 +885,40 @@ Return detailed JSON:
                         logger.info(f"   Skipping {field.label} (appears to be non-form dropdown)")
                         continue
 
-                    # Try multiple strategies to extract options
-                    options = await page.evaluate(f"""
-                        (selector) => {{
-                            const select = document.querySelector(selector);
-                            if (!select) return [];
+                    # CRITICAL: Detect dropdown type and store it
+                    field.dropdown_type = await self._detect_dropdown_type(page, field.selector)
+                    logger.info(f"   Detected dropdown type: {field.dropdown_type}")
 
-                            // Strategy 1: Standard <select> element
-                            if (select.tagName === 'SELECT') {{
+                    options = []
+
+                    # =========================================================
+                    # ANT DESIGN DROPDOWNS - Must click to open and read options
+                    # =========================================================
+                    if field.dropdown_type == 'ant_design':
+                        options = await self._explore_ant_design_dropdown(page, field.selector, field.label)
+                    
+                    # =========================================================
+                    # SELECT2 DROPDOWNS
+                    # =========================================================
+                    elif field.dropdown_type == 'select2':
+                        options = await self._explore_select2_dropdown(page, field.selector, field.label)
+                    
+                    # =========================================================
+                    # PLAIN HTML SELECT - Read directly from DOM
+                    # =========================================================
+                    else:
+                        options = await page.evaluate(f"""
+                            (selector) => {{
+                                const select = document.querySelector(selector);
+                                if (!select || select.tagName !== 'SELECT') return [];
+                                
                                 const opts = Array.from(select.options).map(opt => ({{
                                     text: opt.text.trim(),
                                     value: opt.value
                                 }}));
-                                return opts.filter(o => o.text && o.text !== 'Please Select' && o.text !== 'Select');
+                                return opts.filter(o => o.text && o.text !== 'Please Select' && o.text !== 'Select' && o.text !== '--Select--');
                             }}
-
-                            // Strategy 2: Select2 - look for data stored in original select
-                            const select2Container = select.closest('.select2-container') ||
-                                                    document.querySelector(`[data-select2-id="${{select.id}}"]`) ||
-                                                    select.parentElement?.querySelector('select');
-
-                            if (select2Container) {{
-                                // Find the actual hidden select element
-                                const hiddenSelect = document.getElementById(select.id) ||
-                                                   select.parentElement?.querySelector('select[id*="' + select.id.split('_')[0] + '"]');
-
-                                if (hiddenSelect && hiddenSelect.options) {{
-                                    const opts = Array.from(hiddenSelect.options).map(opt => ({{
-                                        text: opt.text.trim(),
-                                        value: opt.value
-                                    }}));
-                                    return opts.filter(o => o.text && o.text !== 'Please Select' && o.text !== 'Select');
-                                }}
-                            }}
-
-                            return [];
-                        }}
-                    """, field.selector)
-
-                    # If no options found via DOM, try clicking and capturing visible options
-                    if not options:
-                        try:
-                            # Find the Select2 trigger element
-                            select2_trigger = page.locator(f"{field.selector}").or_(
-                                page.locator(f"span.select2-container").filter(has=page.locator(field.selector))
-                            ).or_(
-                                page.locator(f"#{field.selector.strip('#')}_container")
-                            ).first
-
-                            if await select2_trigger.count() > 0:
-                                await select2_trigger.click(timeout=3000)
-                                await asyncio.sleep(0.5)
-
-                                # Capture visible options from dropdown
-                                options = await page.evaluate("""
-                                    () => {
-                                        const results = document.querySelectorAll('.select2-results li, .select2-results__option');
-                                        return Array.from(results).map(li => ({
-                                            text: li.textContent.trim(),
-                                            value: li.getAttribute('data-value') || li.textContent.trim()
-                                        })).filter(o => o.text && !o.text.includes('Searching') && !o.text.includes('Loading'));
-                                    }
-                                """)
-
-                                # Close dropdown
-                                await page.keyboard.press('Escape')
-                                await asyncio.sleep(0.3)
-                        except Exception as e:
-                            logger.debug(f"Select2 click failed for {field.label}: {e}")
+                        """, field.selector)
 
                     if options:
                         field.options = [opt['text'] for opt in options if opt.get('text')]
@@ -550,6 +928,165 @@ Return detailed JSON:
 
                 except Exception as e:
                     logger.warning(f"   Could not explore {field.label}: {e}")
+
+    async def _explore_ant_design_dropdown(self, page: Page, selector: str, field_name: str) -> List[Dict[str, str]]:
+        """
+        Explore Ant Design dropdown by clicking to open and reading visible options.
+        Ant Design renders options in a portal, so we must click to see them.
+        
+        CRITICAL: Must use Playwright's native click(), NOT JavaScript click(),
+        because React's synthetic event system doesn't respond to JS click().
+        """
+        options = []
+        try:
+            # Find the ant-select wrapper using Playwright locator
+            # First try to locate via the selector, then find the wrapper
+            element = page.locator(selector).first
+            if not await element.count():
+                logger.debug(f"{field_name}: Selector {selector} not found")
+                return []
+            
+            # Get the ant-select wrapper
+            wrapper = page.locator(f"{selector}").locator("xpath=ancestor::div[contains(@class, 'ant-select')]").first
+            
+            # If we can't find wrapper via xpath, try direct .ant-select parent approach
+            if not await wrapper.count():
+                # Try finding by ID pattern
+                if selector.startswith('#'):
+                    field_id = selector[1:]  # Remove #
+                    wrapper = page.locator(f".ant-select:has(input#{field_id})").first
+            
+            if not await wrapper.count():
+                logger.debug(f"{field_name}: No ant-select wrapper found for {selector}")
+                return []
+            
+            # CRITICAL: Use Playwright's native click, NOT JavaScript click
+            # JavaScript click() doesn't trigger React's synthetic events
+            await wrapper.click()
+            await asyncio.sleep(1.0)  # Wait for dropdown to open and options to render
+            
+            # Find the visible dropdown and extract options
+            options = await page.evaluate("""
+                () => {
+                    // Find all visible ant-select-dropdowns
+                    const dropdowns = document.querySelectorAll('.ant-select-dropdown');
+                    let visibleDropdown = null;
+                    
+                    for (const dd of dropdowns) {
+                        const style = window.getComputedStyle(dd);
+                        if (style.display !== 'none' && style.visibility !== 'hidden') {
+                            visibleDropdown = dd;
+                            break;
+                        }
+                    }
+                    
+                    if (!visibleDropdown) return [];
+                    
+                    // Get all options from the dropdown
+                    const optionElements = visibleDropdown.querySelectorAll('.ant-select-item-option');
+                    const options = [];
+                    
+                    optionElements.forEach(opt => {
+                        const text = opt.textContent?.trim();
+                        const value = opt.getAttribute('data-value') || 
+                                     opt.getAttribute('title') || 
+                                     text;
+                        if (text && text !== '' && !text.includes('Loading')) {
+                            options.push({ text, value });
+                        }
+                    });
+                    
+                    return options;
+                }
+            """)
+            
+            # Close the dropdown
+            await page.keyboard.press('Escape')
+            await asyncio.sleep(0.3)
+            
+            if options:
+                logger.debug(f"{field_name}: Found {len(options)} Ant Design options")
+            
+            return options
+            
+        except Exception as e:
+            logger.debug(f"Ant Design exploration failed for {field_name}: {e}")
+            # Make sure to close dropdown if open
+            try:
+                await page.keyboard.press('Escape')
+            except:
+                pass
+            return []
+
+    async def _explore_select2_dropdown(self, page: Page, selector: str, field_name: str) -> List[Dict[str, str]]:
+        """
+        Explore Select2 dropdown - first try DOM, then click to open
+        """
+        options = []
+        
+        try:
+            # Strategy 1: Try to read from hidden select element
+            options = await page.evaluate(f"""
+                (selector) => {{
+                    const select = document.querySelector(selector);
+                    if (!select) return [];
+                    
+                    // Check if it's a select element with options
+                    if (select.tagName === 'SELECT' && select.options) {{
+                        const opts = Array.from(select.options).map(opt => ({{
+                            text: opt.text.trim(),
+                            value: opt.value
+                        }}));
+                        return opts.filter(o => o.text && o.text !== 'Please Select' && o.text !== 'Select');
+                    }}
+                    
+                    // Try to find associated select
+                    const id = select.id;
+                    const hiddenSelect = document.querySelector(`select#${{id}}, select[name="${{id}}"]`);
+                    if (hiddenSelect && hiddenSelect.options) {{
+                        const opts = Array.from(hiddenSelect.options).map(opt => ({{
+                            text: opt.text.trim(),
+                            value: opt.value
+                        }}));
+                        return opts.filter(o => o.text && o.text !== 'Please Select' && o.text !== 'Select');
+                    }}
+                    
+                    return [];
+                }}
+            """, selector)
+            
+            if options:
+                return options
+            
+            # Strategy 2: Click to open and capture visible options
+            container = page.locator(f"{selector} + .select2-container, .select2-container").first
+            
+            if await container.count() > 0:
+                await container.click(timeout=3000)
+                await asyncio.sleep(0.5)
+                
+                options = await page.evaluate("""
+                    () => {
+                        const results = document.querySelectorAll('.select2-results li, .select2-results__option');
+                        return Array.from(results).map(li => ({
+                            text: li.textContent.trim(),
+                            value: li.getAttribute('data-value') || li.getAttribute('id') || li.textContent.trim()
+                        })).filter(o => o.text && !o.text.includes('Searching') && !o.text.includes('Loading'));
+                    }
+                """)
+                
+                await page.keyboard.press('Escape')
+                await asyncio.sleep(0.3)
+            
+            return options
+            
+        except Exception as e:
+            logger.debug(f"Select2 exploration failed for {field_name}: {e}")
+            try:
+                await page.keyboard.press('Escape')
+            except:
+                pass
+            return []
 
     async def _scroll_and_discover(self, page: Page, schema: FormSchema):
         """Scroll page to discover lazy-loaded fields - focuses on main complaint form"""
@@ -614,7 +1151,7 @@ Return detailed JSON:
                 existing_names.add(name)
 
     async def _detect_cascading_fields(self, page: Page, schema: FormSchema):
-        """Detect if any dropdowns trigger others"""
+        """Detect if any dropdowns trigger others - handles ALL dropdown types including Select2"""
         logger.info(f"🔗 Detecting cascading relationships")
 
         dropdowns = [f for f in schema.fields if f.type == "dropdown"]
@@ -624,27 +1161,51 @@ Return detailed JSON:
                 # Test if selecting parent populates child
                 try:
                     if parent.options:
-                        logger.info(f"   Testing: {parent.label} → {child.label}")
+                        logger.info(f"   Testing: {parent.label} ({parent.dropdown_type}) → {child.label}")
 
-                        # Select first option in parent
-                        await page.select_option(parent.selector, parent.options[0], timeout=3000)
-                        await asyncio.sleep(0.5)
-
-                        # Check if child got populated
-                        child_options_after = await page.evaluate(f"""
+                        # Get child option count BEFORE parent selection
+                        child_options_before = await page.evaluate(f"""
                             () => {{
                                 const select = document.querySelector('{child.selector}');
-                                if (select) {{
+                                if (select && select.options) {{
                                     return Array.from(select.options).map(o => o.text);
                                 }}
                                 return [];
                             }}
                         """)
 
-                        if len(child_options_after) > len(child.options):
-                            logger.info(f"   ✅ Cascading detected!")
+                        # Use our universal dropdown selector that handles all types!
+                        selection_success = await self._select_dropdown_value(
+                            page, 
+                            parent.selector, 
+                            parent.options[0],
+                            dropdown_type=parent.dropdown_type,
+                            wait_after=1.5  # Extra wait for cascading to load
+                        )
+
+                        if not selection_success:
+                            logger.debug(f"   Could not select {parent.label}, skipping cascade test")
+                            continue
+
+                        # Check if child got populated AFTER parent selection
+                        child_options_after = await page.evaluate(f"""
+                            () => {{
+                                const select = document.querySelector('{child.selector}');
+                                if (select && select.options) {{
+                                    return Array.from(select.options).map(o => o.text);
+                                }}
+                                return [];
+                            }}
+                        """)
+
+                        # Check if new options appeared
+                        new_options = len(child_options_after) > len(child_options_before)
+                        different_options = set(child_options_after) != set(child_options_before)
+
+                        if new_options or different_options:
+                            logger.info(f"   ✅ Cascading detected! ({len(child_options_before)} → {len(child_options_after)} options)")
                             child.depends_on = parent.name
-                            child.options = child_options_after
+                            child.options = [opt for opt in child_options_after if opt and 'select' not in opt.lower()]
 
                 except Exception as e:
                     logger.debug(f"   Cascade test failed: {e}")

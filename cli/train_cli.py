@@ -5,6 +5,11 @@ CLI Tool for Training AI Agents on Municipal Websites
 import asyncio
 import sys
 import argparse
+from pathlib import Path
+
+# Add project root to Python path
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
 from agents.orchestrator import Orchestrator
 
 
@@ -40,6 +45,15 @@ Examples:
                        help='Try Browser Use AI first instead of Playwright')
     parser.add_argument('--no-browser-use-fallback', action='store_true',
                        help='Disable Browser Use fallback (Playwright only, even on failure)')
+    
+    # Browser type option
+    parser.add_argument('--browser', '-b', choices=['firefox', 'chromium', 'webkit'],
+                       default='firefox',
+                       help='Browser to use (default: firefox - more compatible with Linux)')
+    
+    # Skip visual analysis option (faster, cheaper)
+    parser.add_argument('--skip-visual-analysis', '--fast', action='store_true',
+                       help='Skip AI vision analysis (faster & cheaper, uses DOM-only exploration)')
 
     args = parser.parse_args()
 
@@ -71,6 +85,7 @@ Examples:
     print(f"District: {district}")
     print(f"URL: {url}")
     print(f"Headless: {args.headless}")
+    print(f"Browser: {args.browser}")
     print()
 
     # Human recording fallback (enabled by default unless --no-recording)
@@ -109,7 +124,9 @@ Examples:
         headless=args.headless,
         enable_human_recording=enable_recording,
         enable_hybrid_discovery=enable_hybrid,
-        hybrid_config=hybrid_config
+        hybrid_config=hybrid_config,
+        browser_type=args.browser,
+        skip_visual_analysis=args.skip_visual_analysis
     )
 
     # Run training

@@ -550,6 +550,378 @@ def retry_with_backoff(max_retries: int = 3, base_delay: float = 1.0):
 
 
 # =============================================================================
+# UNIVERSAL DROPDOWN HANDLER (Works with ANY dropdown type)
+# =============================================================================
+
+UNIVERSAL_DROPDOWN_HANDLER = CodeTemplate(
+    name="universal_dropdown_handler",
+    framework=UIFramework.UNKNOWN,
+    pattern_type="dropdown",
+    description="Universal dropdown handler that auto-detects and handles Select2, Ant Design, Material UI, Bootstrap, and plain HTML dropdowns.",
+    dependencies=["asyncio", "logging"],
+    tested_on=["mcd_delhi_hybrid", "ranchi_smart", "abua_sathi"],
+    code='''
+async def _detect_dropdown_type(self, selector: str) -> str:
+    """
+    Auto-detect dropdown type (Select2, Ant Design, etc.)
+    
+    Returns: 'select2', 'ant_design', 'material_ui', 'bootstrap', or 'plain_html'
+    """
+    try:
+        return await self.page.evaluate("""
+            (selector) => {
+                const el = document.querySelector(selector);
+                if (!el) return 'plain_html';
+                
+                const allClasses = (el.className + ' ' + 
+                    (el.parentElement?.className || '') + ' ' +
+                    (el.parentElement?.parentElement?.className || '')).toLowerCase();
+                
+                // Select2 detection
+                if (allClasses.includes('select2') || 
+                    el.classList.contains('select2-hidden-accessible') ||
+                    document.querySelector(`[data-select2-id="${el.id}"]`)) {
+                    return 'select2';
+                }
+                
+                // Ant Design detection
+                if (allClasses.includes('ant-select') || allClasses.includes('ant-')) {
+                    return 'ant_design';
+                }
+                
+                // Material UI detection
+                if (allClasses.includes('mui') || allClasses.includes('MuiSelect')) {
+                    return 'material_ui';
+                }
+                
+                // Bootstrap Select detection
+                if (allClasses.includes('bootstrap-select') || allClasses.includes('selectpicker')) {
+                    return 'bootstrap';
+                }
+                
+                // Check for jQuery Select2 plugin
+                if (typeof $ !== 'undefined' && $.fn && $.fn.select2) {
+                    try {
+                        if ($(el).data('select2')) return 'select2';
+                    } catch(e) {}
+                }
+                
+                return 'plain_html';
+            }
+        """, selector)
+    except:
+        return 'plain_html'
+
+async def _select_dropdown_value(
+    self, 
+    selector: str, 
+    value: str, 
+    dropdown_type: str = None,
+    wait_after: float = 1.5
+) -> bool:
+    """
+    Universal dropdown selection - works with ANY dropdown type.
+    
+    Args:
+        selector: CSS selector for the dropdown
+        value: Value or text to select
+        dropdown_type: Optional type override (auto-detected if None)
+        wait_after: Seconds to wait after selection (for cascading dropdowns)
+        
+    Returns:
+        True if selection was successful
+    """
+    if dropdown_type is None:
+        dropdown_type = await self._detect_dropdown_type(selector)
+    
+    logger.info(f"Selecting '{value}' in {dropdown_type} dropdown: {selector}")
+    
+    try:
+        if dropdown_type == 'select2':
+            return await self._select_select2(selector, value, wait_after)
+        elif dropdown_type == 'ant_design':
+            return await self._select_ant_design(selector, value, wait_after)
+        else:
+            return await self._select_plain_html(selector, value, wait_after)
+    except Exception as e:
+        logger.warning(f"Primary selection failed, trying fallback: {e}")
+        try:
+            return await self._select_plain_html(selector, value, wait_after)
+        except:
+            return False
+
+async def _select_select2(self, selector: str, value: str, wait_after: float = 1.5) -> bool:
+    """
+    Select value in Select2 dropdown using jQuery.
+    CRITICAL: Regular select_option() will NOT work with Select2!
+    """
+    try:
+        # Strategy 1: Use jQuery (most reliable for Select2)
+        result = await self.page.evaluate("""
+            (args) => {
+                const select = document.querySelector(args.selector);
+                if (!select || typeof $ === 'undefined') {
+                    return { success: false, error: 'jQuery or element not found' };
+                }
+                
+                try {
+                    const $select = $(select);
+                    let optionValue = args.value;
+                    
+                    // Find option by value or text
+                    const options = $select.find('option');
+                    let found = false;
+                    options.each(function() {
+                        if (this.value === args.value || 
+                            this.text.toLowerCase().includes(args.value.toLowerCase())) {
+                            found = true;
+                            optionValue = this.value;
+                            return false; // break
+                        }
+                    });
+                    
+                    // Fallback: first non-empty option
+                    if (!found && options.length > 1) {
+                        for (let i = 0; i < options.length; i++) {
+                            if (options[i].value && options[i].value !== '') {
+                                optionValue = options[i].value;
+                                break;
+                            }
+                        }
+                    }
+                    
+                    // Set value and trigger all necessary events
+                    $select.val(optionValue);
+                    $select.trigger('change');
+                    $select.trigger('change.select2');
+                    
+                    return { success: true, selectedValue: optionValue };
+                } catch (e) {
+                    return { success: false, error: e.message };
+                }
+            }
+        """, {"selector": selector, "value": value})
+        
+        if result.get('success'):
+            await asyncio.sleep(wait_after)
+            logger.info(f"Select2 selection successful: {result.get('selectedValue')}")
+            return True
+        
+        # Strategy 2: Click to open, then select visually
+        logger.debug("jQuery approach failed, trying click approach...")
+        
+        # Find Select2 container
+        container = self.page.locator(f"{selector} + .select2-container").first
+        if await container.count() > 0:
+            await container.click(timeout=2000)
+            await asyncio.sleep(0.5)
+            
+            # Type to search
+            search = self.page.locator(".select2-search__field").first
+            if await search.count() > 0:
+                await search.fill(value[:10])
+                await asyncio.sleep(0.5)
+            
+            # Click first result
+            result = self.page.locator(".select2-results__option:not(.select2-results__option--disabled)").first
+            if await result.count() > 0:
+                await result.click()
+                await asyncio.sleep(wait_after)
+                return True
+        
+        await self.page.keyboard.press("Escape")
+        return False
+        
+    except Exception as e:
+        logger.warning(f"Select2 selection failed: {e}")
+        await self.page.keyboard.press("Escape")
+        return False
+
+async def _select_ant_design(self, selector: str, value: str, wait_after: float = 1.5) -> bool:
+    """Select value in Ant Design dropdown"""
+    try:
+        element = self.page.locator(selector).first
+        wrapper = element.locator("xpath=ancestor::div[contains(@class,'ant-select')]").first
+        
+        if await wrapper.count() == 0:
+            wrapper = self.page.locator(".ant-select").filter(has=element).first
+        
+        if await wrapper.count() > 0:
+            await wrapper.click(force=True)
+            await asyncio.sleep(0.8)
+            
+            # Find visible dropdown and select option
+            dropdowns = self.page.locator(".ant-select-dropdown")
+            for i in range(await dropdowns.count()):
+                dd = dropdowns.nth(i)
+                if await dd.is_visible():
+                    options = dd.locator(".ant-select-item-option")
+                    for j in range(await options.count()):
+                        opt = options.nth(j)
+                        text = await opt.text_content()
+                        if text and value.lower() in text.lower():
+                            await opt.click()
+                            await asyncio.sleep(wait_after)
+                            return True
+                    
+                    # Fallback: first option
+                    if await options.count() > 0:
+                        await options.first.click()
+                        await asyncio.sleep(wait_after)
+                        return True
+        
+        await self.page.keyboard.press("Escape")
+        return False
+        
+    except Exception as e:
+        logger.warning(f"Ant Design selection failed: {e}")
+        await self.page.keyboard.press("Escape")
+        return False
+
+async def _select_plain_html(self, selector: str, value: str, wait_after: float = 1.0) -> bool:
+    """Select value in standard HTML select element"""
+    try:
+        # Try by value
+        try:
+            await self.page.select_option(selector, value=value, timeout=3000)
+            await asyncio.sleep(wait_after)
+            return True
+        except:
+            pass
+        
+        # Try by label
+        try:
+            await self.page.select_option(selector, label=value, timeout=3000)
+            await asyncio.sleep(wait_after)
+            return True
+        except:
+            pass
+        
+        # Try partial text match
+        options = await self.page.evaluate("""
+            (selector) => {
+                const select = document.querySelector(selector);
+                if (!select) return [];
+                return Array.from(select.options).map(o => ({
+                    value: o.value,
+                    text: o.text
+                }));
+            }
+        """, selector)
+        
+        for opt in options:
+            if opt['text'] and value.lower() in opt['text'].lower():
+                await self.page.select_option(selector, value=opt['value'], timeout=3000)
+                await asyncio.sleep(wait_after)
+                return True
+        
+        # Fallback: first non-empty option
+        for opt in options:
+            if opt['value'] and opt['value'] != '' and 'select' not in opt['text'].lower():
+                await self.page.select_option(selector, value=opt['value'], timeout=3000)
+                await asyncio.sleep(wait_after)
+                return True
+        
+        return False
+        
+    except Exception as e:
+        logger.warning(f"Plain HTML selection failed: {e}")
+        return False
+'''
+)
+
+
+UNIVERSAL_CASCADING_DROPDOWN = CodeTemplate(
+    name="universal_cascading_dropdown",
+    framework=UIFramework.UNKNOWN,
+    pattern_type="cascade",
+    description="Handles cascading dropdowns of any type. Selects parent, waits for child to load, then selects child.",
+    dependencies=["asyncio", "logging"],
+    tested_on=["mcd_delhi_hybrid", "ranchi_smart"],
+    code='''
+async def _fill_cascading_dropdowns(
+    self,
+    parent_selector: str,
+    parent_value: str,
+    child_selector: str,
+    child_value: str,
+    parent_name: str = "Parent",
+    child_name: str = "Child",
+    wait_for_load: float = 2.0
+) -> bool:
+    """
+    Fill cascading dropdowns where child options depend on parent selection.
+    Works with ANY dropdown type (Select2, Ant Design, plain HTML, etc.)
+    
+    Args:
+        parent_selector: CSS selector for parent dropdown
+        parent_value: Value to select in parent
+        child_selector: CSS selector for child dropdown
+        child_value: Value to select in child
+        parent_name: Display name for logging
+        child_name: Display name for logging
+        wait_for_load: Time to wait for child options to load after parent selection
+        
+    Returns:
+        True if both selections were successful
+    """
+    logger.info(f"Filling cascade: {parent_name} -> {child_name}")
+    
+    # Step 1: Select parent
+    parent_success = await self._select_dropdown_value(
+        parent_selector, 
+        parent_value, 
+        wait_after=wait_for_load
+    )
+    
+    if not parent_success:
+        logger.error(f"Failed to select {parent_name}")
+        return False
+    
+    logger.info(f"Selected {parent_name}, waiting {wait_for_load}s for {child_name} to load...")
+    
+    # Step 2: Wait for child options to load (AJAX)
+    # Some forms take longer to load cascading options
+    await asyncio.sleep(wait_for_load)
+    
+    # Step 3: Wait for child to have options (with timeout)
+    try:
+        for _ in range(5):  # Try up to 5 times
+            child_options = await self.page.evaluate(f"""
+                () => {{
+                    const select = document.querySelector('{child_selector}');
+                    if (select && select.options) {{
+                        return Array.from(select.options)
+                            .filter(o => o.value && o.value !== '')
+                            .length;
+                    }}
+                    return 0;
+                }}
+            """)
+            if child_options > 0:
+                break
+            await asyncio.sleep(0.5)
+    except:
+        pass
+    
+    # Step 4: Select child
+    child_success = await self._select_dropdown_value(
+        child_selector, 
+        child_value,
+        wait_after=1.0
+    )
+    
+    if child_success:
+        logger.info(f"Successfully filled cascade: {parent_name} -> {child_name}")
+    else:
+        logger.warning(f"Failed to select {child_name}")
+    
+    return child_success
+'''
+)
+
+
+# =============================================================================
 # TEMPLATE REGISTRY
 # =============================================================================
 
@@ -572,6 +944,10 @@ TEMPLATE_REGISTRY: Dict[UIFramework, Dict[str, CodeTemplate]] = {
         "text_input": TEXT_INPUT_WITH_VALIDATION,
         "file_upload": FILE_UPLOAD,
         "retry": RETRY_WITH_BACKOFF,
+    },
+    UIFramework.UNKNOWN: {
+        "universal_dropdown": UNIVERSAL_DROPDOWN_HANDLER,
+        "universal_cascade": UNIVERSAL_CASCADING_DROPDOWN,
     },
 }
 
@@ -605,19 +981,50 @@ def get_template_code_for_prompt(framework: UIFramework) -> str:
     """
     templates = get_templates_for_framework(framework)
     if not templates:
-        return ""
+        templates = {}
 
-    lines = [f"\n**PROVEN CODE TEMPLATES FOR {framework.value.upper()}:**\n"]
-
-    for name, template in templates.items():
-        lines.append(f"### {template.name}")
-        lines.append(f"# {template.description}")
-        lines.append(f"# Tested on: {', '.join(template.tested_on)}")
-        lines.append("```python")
-        lines.append(template.code.strip())
-        lines.append("```\n")
+    # ALWAYS include universal dropdown handlers
+    universal_templates = get_templates_for_framework(UIFramework.UNKNOWN)
+    
+    lines = []
+    
+    if templates:
+        lines.append(f"\n**PROVEN CODE TEMPLATES FOR {framework.value.upper()}:**\n")
+        for name, template in templates.items():
+            lines.append(f"### {template.name}")
+            lines.append(f"# {template.description}")
+            lines.append(f"# Tested on: {', '.join(template.tested_on)}")
+            lines.append("```python")
+            lines.append(template.code.strip())
+            lines.append("```\n")
+    
+    # Always add universal handlers
+    if universal_templates:
+        lines.append("\n**UNIVERSAL DROPDOWN HANDLERS (Use these for ANY dropdown type):**\n")
+        for name, template in universal_templates.items():
+            lines.append(f"### {template.name}")
+            lines.append(f"# {template.description}")
+            lines.append("```python")
+            lines.append(template.code.strip())
+            lines.append("```\n")
 
     return "\n".join(lines)
+
+
+def get_universal_dropdown_code() -> str:
+    """
+    Get the universal dropdown handler code for direct inclusion in scrapers.
+    This code works with Select2, Ant Design, Material UI, Bootstrap, and plain HTML.
+    """
+    universal = TEMPLATE_REGISTRY.get(UIFramework.UNKNOWN, {})
+    code_parts = []
+    
+    for template in universal.values():
+        code_parts.append(f"    # {template.description}")
+        code_parts.append(template.code.strip())
+        code_parts.append("")
+    
+    return "\n".join(code_parts)
 
 
 # =============================================================================

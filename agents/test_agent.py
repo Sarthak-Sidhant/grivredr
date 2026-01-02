@@ -44,9 +44,10 @@ class TestValidationAgent(BaseAgent):
     Agent that validates form schemas through systematic testing
     """
 
-    def __init__(self, headless: bool = False):
+    def __init__(self, headless: bool = False, browser_type: str = "firefox"):
         super().__init__(name="TestValidationAgent", max_attempts=3)
         self.headless = headless
+        self.browser_type = browser_type  # "chromium", "firefox", or "webkit"
         self.browser: Optional[Browser] = None
         self.playwright = None
 
@@ -146,9 +147,17 @@ class TestValidationAgent(BaseAgent):
         """Initialize Playwright browser"""
         if not self.playwright:
             self.playwright = await async_playwright().start()
-            self.browser = await self.playwright.chromium.launch(
+            # Select browser type based on configuration
+            if self.browser_type == "firefox":
+                browser_launcher = self.playwright.firefox
+            elif self.browser_type == "webkit":
+                browser_launcher = self.playwright.webkit
+            else:
+                browser_launcher = self.playwright.chromium
+            
+            self.browser = await browser_launcher.launch(
                 headless=self.headless,
-                args=['--disable-blink-features=AutomationControlled']
+                args=['--no-sandbox'] if self.browser_type == "chromium" else []
             )
 
     async def _cleanup_browser(self):
@@ -595,7 +604,14 @@ class TestValidationAgent(BaseAgent):
             await context.close()
 
     async def _fill_form(self, page: Page, schema: FormSchema, data: Dict[str, Any]):
-        """Helper: Fill form with provided data"""
+        """Helper: Fill form with provided data - handles all dropdown types including Ant Design
+        
+        CRITICAL: For cascading dropdowns (Sub Category depends on Category, Ward depends on Zone),
+        we must wait after selecting parent dropdown for child options to load via AJAX.
+        """
+        # Identify cascading relationships (common patterns)
+        cascading_parents = ['category', 'zone', 'state', 'district', 'department']
+        
         for field in schema.fields:
             if field.name not in data:
                 continue
@@ -604,44 +620,25 @@ class TestValidationAgent(BaseAgent):
 
             try:
                 if field.type == "dropdown":
-                    # Try Select2 dropdown first (learned from ranchi_smart)
-                    is_select2 = await page.evaluate(f"""
-                        () => {{
-                            const select = document.querySelector('{field.selector}');
-                            if (!select) return false;
-                            return select.classList.contains('select2-hidden-accessible') ||
-                                   select.getAttribute('data-select2-id') !== null ||
-                                   (window.jQuery && jQuery(select).data('select2'));
-                        }}
-                    """)
-
-                    if is_select2:
-                        logger.info(f"   🎯 Detected Select2 dropdown: {field.label}")
-                        # Use JavaScript to set value (learned pattern from ranchi_smart)
-                        await page.evaluate(f"""
-                            (value) => {{
-                                const select = document.querySelector('{field.selector}');
-                                if (select) {{
-                                    select.value = value;
-                                    // Trigger change event
-                                    const event = new Event('change', {{ bubbles: true }});
-                                    select.dispatchEvent(event);
-
-                                    // Also trigger Select2 change if it exists
-                                    if (window.jQuery && jQuery(select).data('select2')) {{
-                                        jQuery(select).trigger('change');
-                                    }}
-                                }}
-                            }}
-                        """, value)
-                        await asyncio.sleep(1)  # Wait for cascading/AJAX
-                    else:
-                        # Regular dropdown
-                        await page.select_option(field.selector, value, timeout=3000)
-                        await asyncio.sleep(0.3)
-
+                    # Use universal dropdown handler that works with all types
+                    success = await self._fill_dropdown_universal(page, field, value)
+                    
+                    # CRITICAL: If this is a parent dropdown (category, zone, etc.),
+                    # wait extra time for cascading child dropdowns to load options via AJAX
+                    field_name_lower = field.name.lower() if field.name else ''
+                    label_lower = field.label.lower() if field.label else ''
+                    
+                    is_cascading_parent = any(
+                        parent in field_name_lower or parent in label_lower 
+                        for parent in cascading_parents
+                    )
+                    
+                    if is_cascading_parent and success:
+                        logger.debug(f"Waiting for cascading children after selecting {field.label}")
+                        await asyncio.sleep(2.0)  # Wait for child dropdown options to load
+                    
                 elif field.type == "textarea":
-                    await page.fill(field.selector, value, timeout=3000)
+                    await self._fill_text_input(page, field.selector, value)
                 elif field.type == "file":
                     # Skip file uploads in testing for now
                     pass
@@ -658,10 +655,306 @@ class TestValidationAgent(BaseAgent):
                         }}
                     """, str(value))
                 else:
-                    await page.fill(field.selector, value, timeout=3000)
+                    await self._fill_text_input(page, field.selector, value)
 
             except Exception as e:
                 logger.warning(f"Could not fill {field.label}: {e}")
+
+    async def _fill_text_input(self, page: Page, selector: str, value: str):
+        """Fill text input, handling hidden/disabled Ant Design inputs"""
+        try:
+            # First check if element is visible and enabled
+            is_fillable = await page.evaluate(f"""
+                () => {{
+                    const el = document.querySelector('{selector}');
+                    if (!el) return {{ exists: false }};
+                    const style = window.getComputedStyle(el);
+                    return {{
+                        exists: true,
+                        visible: style.display !== 'none' && style.visibility !== 'hidden',
+                        enabled: !el.disabled && !el.readOnly,
+                        isHidden: el.type === 'hidden'
+                    }};
+                }}
+            """)
+            
+            if not is_fillable.get('exists'):
+                logger.debug(f"Element {selector} not found")
+                return
+            
+            if is_fillable.get('isHidden') or not is_fillable.get('visible'):
+                # Hidden input - set value via JS
+                await page.evaluate(f"""
+                    (value) => {{
+                        const el = document.querySelector('{selector}');
+                        if (el) {{
+                            el.value = value;
+                            el.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                            el.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                        }}
+                    }}
+                """, value)
+            elif is_fillable.get('enabled'):
+                await page.fill(selector, value, timeout=3000)
+            else:
+                # Disabled/readonly - try JS anyway
+                await page.evaluate(f"""
+                    (value) => {{
+                        const el = document.querySelector('{selector}');
+                        if (el) {{
+                            el.value = value;
+                            el.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                        }}
+                    }}
+                """, value)
+        except Exception as e:
+            logger.debug(f"Text input fill failed for {selector}: {e}")
+
+    async def _fill_dropdown_universal(self, page: Page, field, value: str):
+        """
+        Universal dropdown handler - works with Select2, Ant Design, and plain HTML
+        """
+        selector = field.selector
+        
+        # Detect dropdown type
+        dropdown_type = await page.evaluate(f"""
+            () => {{
+                const el = document.querySelector('{selector}');
+                if (!el) return 'not_found';
+                
+                const allClasses = (el.className + ' ' + 
+                    (el.parentElement?.className || '') + ' ' +
+                    (el.parentElement?.parentElement?.className || '')).toLowerCase();
+                
+                // Ant Design detection (BEFORE Select2 - more specific)
+                if (allClasses.includes('ant-select') || 
+                    el.classList.contains('ant-select-selection-search-input') ||
+                    el.closest('.ant-select')) {{
+                    return 'ant_design';
+                }}
+                
+                // Select2 detection
+                if (allClasses.includes('select2') || 
+                    el.classList.contains('select2-hidden-accessible') ||
+                    document.querySelector(`[data-select2-id="${{el.id}}"]`)) {{
+                    return 'select2';
+                }}
+                
+                // Check if it's a standard select
+                if (el.tagName === 'SELECT') {{
+                    return 'plain_html';
+                }}
+                
+                // Check for combobox role (common in custom dropdowns)
+                if (el.getAttribute('role') === 'combobox') {{
+                    return 'combobox';
+                }}
+                
+                return 'unknown';
+            }}
+        """)
+        
+        logger.debug(f"Dropdown {field.label} detected as: {dropdown_type}")
+        
+        result = False
+        if dropdown_type == 'ant_design' or dropdown_type == 'combobox':
+            result = await self._fill_ant_design_dropdown(page, selector, value, field.label)
+        elif dropdown_type == 'select2':
+            result = await self._fill_select2_dropdown(page, selector, value, field.label)
+        elif dropdown_type == 'plain_html':
+            result = await self._fill_plain_dropdown(page, selector, value, field.label)
+        else:
+            logger.warning(f"Unknown dropdown type for {field.label}, trying Ant Design approach")
+            result = await self._fill_ant_design_dropdown(page, selector, value, field.label)
+        
+        return result if result else False
+
+    async def _fill_ant_design_dropdown(self, page: Page, selector: str, value: str, field_name: str):
+        """
+        Fill Ant Design dropdown - clicks wrapper, finds options, selects one
+        
+        CRITICAL: Must use Playwright's native click(), NOT JavaScript click(),
+        because React's synthetic event system doesn't respond to JS click().
+        """
+        try:
+            # Find the ant-select wrapper using Playwright locator
+            # Get the ant-select wrapper via the input selector
+            wrapper = page.locator(f"{selector}").locator("xpath=ancestor::div[contains(@class, 'ant-select')]").first
+            
+            # If we can't find wrapper via xpath, try direct .ant-select parent approach
+            if not await wrapper.count():
+                # Try finding by ID pattern
+                if selector.startswith('#'):
+                    field_id = selector[1:]  # Remove #
+                    wrapper = page.locator(f".ant-select:has(input#{field_id})").first
+            
+            if not await wrapper.count():
+                logger.warning(f"{field_name}: Ant Design wrapper not found")
+                return False
+            
+            # CRITICAL: Use Playwright's native click, NOT JavaScript click
+            # JavaScript click() doesn't trigger React's synthetic events
+            await wrapper.click()
+            await asyncio.sleep(1.0)
+            
+            # Find visible dropdown and select option
+            dropdown_visible = await page.locator(".ant-select-dropdown").filter(has=page.locator(":visible")).count() > 0
+            
+            if not dropdown_visible:
+                # Try clicking the selector element directly
+                await page.click(f".ant-select:has({selector})", timeout=2000, force=True)
+                await asyncio.sleep(0.8)
+            
+            # Find all visible dropdowns and get options
+            options = page.locator(".ant-select-dropdown:visible .ant-select-item-option")
+            option_count = await options.count()
+            
+            if option_count == 0:
+                # Try alternate selector
+                options = page.locator(".ant-select-dropdown .ant-select-item-option")
+                option_count = await options.count()
+            
+            logger.debug(f"{field_name}: Found {option_count} options")
+            
+            if option_count > 0:
+                # Try to find matching option
+                for i in range(option_count):
+                    opt = options.nth(i)
+                    try:
+                        text = await opt.text_content()
+                        if text and (value.lower() in text.lower() or text.lower() in value.lower()):
+                            await opt.click()
+                            logger.info(f"Selected {field_name}: {text}")
+                            await asyncio.sleep(0.5)
+                            return True
+                    except:
+                        continue
+                
+                # Fallback: click first option
+                try:
+                    first_text = await options.first.text_content()
+                    await options.first.click()
+                    logger.info(f"Selected {field_name} (fallback): {first_text}")
+                    await asyncio.sleep(0.5)
+                    return True
+                except Exception as e:
+                    logger.warning(f"{field_name}: Could not click first option: {e}")
+            
+            # Close dropdown if still open
+            await page.keyboard.press("Escape")
+            return False
+            
+        except Exception as e:
+            logger.warning(f"Ant Design dropdown failed for {field_name}: {e}")
+            await page.keyboard.press("Escape")
+            return False
+
+    async def _fill_select2_dropdown(self, page: Page, selector: str, value: str, field_name: str):
+        """Fill Select2 dropdown using jQuery"""
+        try:
+            result = await page.evaluate(f"""
+                (value) => {{
+                    const select = document.querySelector('{selector}');
+                    if (!select || typeof $ === 'undefined') {{
+                        return {{ success: false, error: 'jQuery or element not found' }};
+                    }}
+                    
+                    try {{
+                        const $select = $(select);
+                        let optionValue = value;
+                        
+                        // Find option by value or text
+                        const options = $select.find('option');
+                        options.each(function() {{
+                            if (this.value === value || 
+                                this.text.toLowerCase().includes(value.toLowerCase())) {{
+                                optionValue = this.value;
+                                return false;
+                            }}
+                        }});
+                        
+                        // Fallback: first non-empty option
+                        if (!optionValue && options.length > 1) {{
+                            for (let i = 0; i < options.length; i++) {{
+                                if (options[i].value && options[i].value !== '') {{
+                                    optionValue = options[i].value;
+                                    break;
+                                }}
+                            }}
+                        }}
+                        
+                        $select.val(optionValue);
+                        $select.trigger('change');
+                        $select.trigger('change.select2');
+                        
+                        return {{ success: true, selectedValue: optionValue }};
+                    }} catch (e) {{
+                        return {{ success: false, error: e.message }};
+                    }}
+                }}
+            """, value)
+            
+            if result.get('success'):
+                logger.info(f"Selected {field_name} (Select2): {result.get('selectedValue')}")
+                await asyncio.sleep(1)
+                return True
+            else:
+                logger.warning(f"Select2 jQuery failed for {field_name}: {result.get('error')}")
+                return False
+                
+        except Exception as e:
+            logger.warning(f"Select2 dropdown failed for {field_name}: {e}")
+            return False
+
+    async def _fill_plain_dropdown(self, page: Page, selector: str, value: str, field_name: str):
+        """Fill plain HTML select dropdown"""
+        try:
+            # Try by value
+            try:
+                await page.select_option(selector, value=value, timeout=3000)
+                logger.info(f"Selected {field_name} by value: {value}")
+                return True
+            except:
+                pass
+            
+            # Try by label
+            try:
+                await page.select_option(selector, label=value, timeout=3000)
+                logger.info(f"Selected {field_name} by label: {value}")
+                return True
+            except:
+                pass
+            
+            # Try partial match
+            options = await page.evaluate(f"""
+                () => {{
+                    const select = document.querySelector('{selector}');
+                    if (!select) return [];
+                    return Array.from(select.options).map(o => ({{
+                        value: o.value,
+                        text: o.text
+                    }}));
+                }}
+            """)
+            
+            for opt in options:
+                if opt.get('text') and value.lower() in opt['text'].lower():
+                    await page.select_option(selector, value=opt['value'], timeout=3000)
+                    logger.info(f"Selected {field_name}: {opt['text']}")
+                    return True
+            
+            # Fallback: first non-empty
+            for opt in options:
+                if opt.get('value') and opt['value'] != '':
+                    await page.select_option(selector, value=opt['value'], timeout=3000)
+                    logger.info(f"Selected {field_name} (fallback): {opt.get('text', opt['value'])}")
+                    return True
+            
+            return False
+            
+        except Exception as e:
+            logger.warning(f"Plain dropdown failed for {field_name}: {e}")
+            return False
 
     def _generate_test_data(self, schema: FormSchema, exclude_field: Optional[str] = None) -> Dict[str, Any]:
         """Generate realistic test data for the form"""

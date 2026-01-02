@@ -70,9 +70,13 @@ class Orchestrator:
         enable_human_recording: bool = False,
         on_human_needed: Optional[Callable] = None,
         enable_hybrid_discovery: bool = True,
-        hybrid_config: Optional[DiscoveryConfig] = None
+        hybrid_config: Optional[DiscoveryConfig] = None,
+        browser_type: str = "firefox",
+        skip_visual_analysis: bool = False
     ):
         self.headless = headless
+        self.browser_type = browser_type  # "chromium", "firefox", or "webkit"
+        self.skip_visual_analysis = skip_visual_analysis  # Skip AI vision for faster/cheaper operation
         self.enable_human_recording = enable_human_recording
         self.enable_hybrid_discovery = enable_hybrid_discovery
         self.hybrid_config = hybrid_config or DiscoveryConfig(
@@ -96,7 +100,7 @@ class Orchestrator:
         self.results_dir = Path("data/training_sessions")
         self.results_dir.mkdir(parents=True, exist_ok=True)
 
-        logger.info(f"🚀 Orchestrator initialized (hybrid_discovery={'enabled' if enable_hybrid_discovery else 'disabled'})")
+        logger.info(f"🚀 Orchestrator initialized (hybrid_discovery={'enabled' if enable_hybrid_discovery else 'disabled'}, browser={browser_type})")
 
     async def train_municipality(
         self,
@@ -241,7 +245,7 @@ class Orchestrator:
             # Use smart hybrid strategy (Playwright first, Browser Use if needed)
             logger.info("🔬 Using Hybrid Discovery Strategy (Playwright + Browser Use AI)")
 
-            strategy = HybridDiscoveryStrategy(config=self.hybrid_config)
+            strategy = HybridDiscoveryStrategy(config=self.hybrid_config, browser_type=self.browser_type)
 
             # Run discovery
             hybrid_result = await strategy.discover(url=url, municipality=municipality)
@@ -281,7 +285,11 @@ class Orchestrator:
             # Traditional Playwright-only discovery
             logger.info("📋 Using Standard Playwright Discovery")
 
-            agent = FormDiscoveryAgent(headless=self.headless)
+            agent = FormDiscoveryAgent(
+                headless=self.headless, 
+                browser_type=self.browser_type,
+                skip_visual_analysis=self.skip_visual_analysis
+            )
 
             # Set up callbacks
             agent.on_status_change = self._agent_status_callback
@@ -308,7 +316,7 @@ class Orchestrator:
     ) -> Dict[str, Any]:
         """Phase 2: Run JavaScript analysis agent"""
 
-        agent = JavaScriptAnalyzerAgent(headless=self.headless)
+        agent = JavaScriptAnalyzerAgent(headless=self.headless, browser_type=self.browser_type)
 
         agent.on_status_change = self._agent_status_callback
         agent.on_action = self._agent_action_callback
@@ -331,7 +339,7 @@ class Orchestrator:
     ) -> Dict[str, Any]:
         """Phase 3: Run test validation agent"""
 
-        agent = TestValidationAgent(headless=self.headless)
+        agent = TestValidationAgent(headless=self.headless, browser_type=self.browser_type)
 
         agent.on_status_change = self._agent_status_callback
         agent.on_action = self._agent_action_callback

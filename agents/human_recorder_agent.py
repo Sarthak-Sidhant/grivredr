@@ -55,10 +55,11 @@ class HumanRecorderAgent:
     4. Generates scraper from recorded actions
     """
 
-    def __init__(self, headless: bool = False, auto_stop: bool = False, capture_screenshots: bool = True):
+    def __init__(self, headless: bool = False, auto_stop: bool = False, capture_screenshots: bool = True, browser_type: str = "firefox"):
         self.headless = headless
         self.auto_stop = auto_stop
         self.capture_screenshots = capture_screenshots
+        self.browser_type = browser_type  # "chromium", "firefox", or "webkit"
         self.browser: Optional[Browser] = None
         self.playwright = None
         self.recording_session: Optional[RecordingSession] = None
@@ -98,9 +99,17 @@ class HumanRecorderAgent:
 
         # Initialize browser
         self.playwright = await async_playwright().start()
-        self.browser = await self.playwright.chromium.launch(
+        # Select browser type based on configuration
+        if self.browser_type == "firefox":
+            browser_launcher = self.playwright.firefox
+        elif self.browser_type == "webkit":
+            browser_launcher = self.playwright.webkit
+        else:
+            browser_launcher = self.playwright.chromium
+        
+        self.browser = await browser_launcher.launch(
             headless=self.headless,
-            args=['--disable-blink-features=AutomationControlled']
+            args=['--no-sandbox'] if self.browser_type == "chromium" else []
         )
 
         context = await self.browser.new_context(
