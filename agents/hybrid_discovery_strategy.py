@@ -30,8 +30,9 @@ class HybridDiscoveryStrategy:
     4. Generate final code using best of both
     """
 
-    def __init__(self, config: Optional[DiscoveryConfig] = None):
+    def __init__(self, config: Optional[DiscoveryConfig] = None, browser_type: str = "firefox"):
         self.config = config or DiscoveryConfig()
+        self.browser_type = browser_type  # "chromium", "firefox", or "webkit"
         self._playwright_agent = None
         self._browser_use_agent = None
 
@@ -181,7 +182,7 @@ class HybridDiscoveryStrategy:
         from agents.form_discovery_agent import FormDiscoveryAgent
 
         if not self._playwright_agent:
-            self._playwright_agent = FormDiscoveryAgent(headless=False)
+            self._playwright_agent = FormDiscoveryAgent(headless=False, browser_type=self.browser_type)
 
         result = await self._playwright_agent.execute({
             'url': url,

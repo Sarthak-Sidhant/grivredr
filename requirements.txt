@@ -6,20 +6,22 @@ flask-socketio==5.3.6
 python-socketio==5.11.0
 
 # Browser Automation
-playwright>=1.49.0
+playwright==1.57.0  # Pinned for consistency
 playwright-stealth==1.0.5
 browser-use==0.1.14  # AI-powered browser automation
 
 # AI/ML
 anthropic>=0.39.0  # Official Anthropic SDK (MegaLLM compatible)
-openai>=1.12.0  # Kept for OpenAI-compatible endpoints
+openai==1.57.0  # Pinned to v1 for langchain-fireworks compatibility
 langchain==0.3.14  # LangChain framework
 langchain-anthropic==0.3.3  # Anthropic integration for LangChain
 langchain-community==0.3.14  # Community integrations
+langsmith==0.2.10  # Pinned to avoid slow resolver probing many versions
 
 # Vector Store (Optional - for semantic search in intelligence library)
-chromadb>=0.4.0  # Vector database
-sentence-transformers>=2.2.0  # Embeddings model
+# chromadb==1.4.0  # Pinned to avoid backtracking through 100+ versions
+# NOTE: Commented out - requires onnxruntime which lacks Python 3.14 wheels
+# sentence-transformers>=2.2.0  # Embeddings model
 
 # Web Scraping & Parsing
 beautifulsoup4==4.12.3

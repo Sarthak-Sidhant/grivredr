@@ -42,10 +42,11 @@ class AIClient:
         )
 
         # Model selection based on task complexity
+        # MegaLLM only has claude-sonnet-4.5 available currently
         self.models = {
-            "fast": "claude-haiku-4.5",  # $1/$5 - Quick tasks
-            "balanced": "claude-sonnet-4.5",  # $3/$15 - Most tasks
-            "powerful": "claude-opus-4.5",  # $5/$25 - Complex reasoning
+            "fast": "claude-sonnet-4.5",  # Using sonnet for all (only available model)
+            "balanced": "claude-sonnet-4.5",  # Most tasks
+            "powerful": "claude-sonnet-4.5",  # Complex reasoning
         }
 
         # AI call caching for cost optimization

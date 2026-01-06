@@ -79,7 +79,7 @@ if python3 -c "import playwright" 2>/dev/null; then
 else
     echo "Installing Python packages..."
     pip install --quiet --upgrade pip
-    pip install --quiet -r requirements.txt
+    pip install -r requirements.txt
     echo -e "${GREEN}✅ Python packages installed${NC}"
 fi
 echo ""

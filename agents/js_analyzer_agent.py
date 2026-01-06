@@ -54,9 +54,10 @@ class JavaScriptAnalyzerAgent(BaseAgent):
     Agent that analyzes JavaScript form behavior and determines automation strategy
     """
 
-    def __init__(self, headless: bool = False):
+    def __init__(self, headless: bool = False, browser_type: str = "firefox"):
         super().__init__(name="JSAnalyzerAgent", max_attempts=3)
         self.headless = headless
+        self.browser_type = browser_type  # "chromium", "firefox", or "webkit"
         self.browser: Optional[Browser] = None
         self.playwright = None
 
@@ -116,9 +117,17 @@ class JavaScriptAnalyzerAgent(BaseAgent):
         """Initialize Playwright browser"""
         if not self.playwright:
             self.playwright = await async_playwright().start()
-            self.browser = await self.playwright.chromium.launch(
+            # Select browser type based on configuration
+            if self.browser_type == "firefox":
+                browser_launcher = self.playwright.firefox
+            elif self.browser_type == "webkit":
+                browser_launcher = self.playwright.webkit
+            else:
+                browser_launcher = self.playwright.chromium
+            
+            self.browser = await browser_launcher.launch(
                 headless=self.headless,
-                args=['--disable-blink-features=AutomationControlled']
+                args=['--no-sandbox'] if self.browser_type == "chromium" else []
             )
 
     async def _cleanup_browser(self):
@@ -308,13 +317,17 @@ class JavaScriptAnalyzerAgent(BaseAgent):
             await context.close()
 
     async def _fill_dummy_form(self, page: Page):
-        """Fill form with dummy data to trigger events"""
+        """Fill form with dummy data to trigger events - handles Ant Design and Select2"""
         try:
             # Fill text inputs
             text_inputs = await page.query_selector_all("input[type='text'], input[type='email'], input[type='tel']")
             for inp in text_inputs[:5]:  # First 5
                 try:
-                    await inp.fill("test", timeout=1000)
+                    # Check if visible and enabled
+                    is_visible = await inp.is_visible()
+                    is_enabled = await inp.is_enabled()
+                    if is_visible and is_enabled:
+                        await inp.fill("test", timeout=1000)
                 except:
                     pass
 
@@ -322,11 +335,46 @@ class JavaScriptAnalyzerAgent(BaseAgent):
             textareas = await page.query_selector_all("textarea")
             for ta in textareas[:2]:
                 try:
-                    await ta.fill("test comment", timeout=1000)
+                    is_visible = await ta.is_visible()
+                    if is_visible:
+                        await ta.fill("test comment", timeout=1000)
                 except:
                     pass
 
-            # Select first option in dropdowns
+            # Handle Ant Design dropdowns with CASCADING support
+            # Must fill ALL dropdowns and wait between each for cascading to work
+            ant_selects = await page.query_selector_all(".ant-select:not(.ant-select-disabled)")
+            logger.debug(f"Found {len(ant_selects)} Ant Design dropdowns to fill")
+            
+            for i, ant_sel in enumerate(ant_selects):
+                try:
+                    # Check if dropdown is visible and enabled
+                    is_visible = await ant_sel.is_visible()
+                    if not is_visible:
+                        continue
+                    
+                    await ant_sel.click(timeout=2000)
+                    await asyncio.sleep(0.8)  # Wait for dropdown to open
+                    
+                    # Click first available option
+                    first_option = page.locator(".ant-select-dropdown:visible .ant-select-item-option").first
+                    if await first_option.count() > 0:
+                        option_text = await first_option.text_content()
+                        await first_option.click(timeout=1000)
+                        logger.debug(f"  Ant Design dropdown {i+1}: selected '{option_text[:30] if option_text else 'option'}'")
+                        # CRITICAL: Wait for cascading dropdowns to load their options
+                        await asyncio.sleep(1.5)
+                    else:
+                        await page.keyboard.press("Escape")
+                        await asyncio.sleep(0.3)
+                except Exception as e:
+                    logger.debug(f"  Ant Design dropdown {i+1} failed: {e}")
+                    try:
+                        await page.keyboard.press("Escape")
+                    except:
+                        pass
+
+            # Handle standard select elements
             selects = await page.query_selector_all("select")
             for sel in selects[:3]:
                 try:
@@ -335,6 +383,24 @@ class JavaScriptAnalyzerAgent(BaseAgent):
                         await options[1].click(timeout=1000)
                 except:
                     pass
+
+            # Handle Select2 dropdowns
+            select2_containers = await page.query_selector_all(".select2-container")
+            for container in select2_containers[:3]:
+                try:
+                    await container.click(timeout=2000)
+                    await asyncio.sleep(0.3)
+                    
+                    first_result = page.locator(".select2-results__option").first
+                    if await first_result.count() > 0:
+                        await first_result.click(timeout=1000)
+                    else:
+                        await page.keyboard.press("Escape")
+                except:
+                    try:
+                        await page.keyboard.press("Escape")
+                    except:
+                        pass
 
             await asyncio.sleep(1)
 
