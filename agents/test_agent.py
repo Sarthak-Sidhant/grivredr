@@ -4,6 +4,7 @@ Tests submission, field validation, and form behavior
 """
 import asyncio
 import logging
+import os
 from typing import Dict, Any, List, Optional
 from dataclasses import dataclass, field
 from playwright.async_api import async_playwright, Page, Browser
@@ -50,6 +51,10 @@ class TestValidationAgent(BaseAgent):
         self.browser_type = browser_type  # "chromium", "firefox", or "webkit"
         self.browser: Optional[Browser] = None
         self.playwright = None
+        
+        # Initialize OTP handler if credentials are available
+        self.otp_handler = None
+        self._init_otp_handler()
 
     async def _execute_attempt(self, task: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -608,12 +613,38 @@ class TestValidationAgent(BaseAgent):
         
         CRITICAL: For cascading dropdowns (Sub Category depends on Category, Ward depends on Zone),
         we must wait after selecting parent dropdown for child options to load via AJAX.
+        
+        Also handles OTP fields automatically if OTP handler is configured.
         """
         # Identify cascading relationships (common patterns)
         cascading_parents = ['category', 'zone', 'state', 'district', 'department']
         
         for field in schema.fields:
             if field.name not in data:
+                # Check if this is an OTP field
+                if self._is_otp_field(field):
+                    # Detect OTP type from field name/label (more specific)
+                    field_label_lower = field.label.lower()
+                    
+                    if any(x in field_label_lower for x in ['email', 'e-mail', 'ई-मेल']):
+                        otp_type = 'email'
+                    elif any(x in field_label_lower for x in ['sms', 'mobile otp', 'phone otp', 'मोबाइल']):
+                        otp_type = 'sms'
+                    else:
+                        # Cannot determine type - check if we have any OTP provider available
+                        if self.otp_handler and 'email' in self.otp_handler.providers:
+                            logger.info(f"Cannot determine OTP type for {field.label}, defaulting to email")
+                            otp_type = 'email'
+                        elif self.otp_handler and 'sms' in self.otp_handler.providers:
+                            logger.info(f"Cannot determine OTP type for {field.label}, defaulting to sms")
+                            otp_type = 'sms'
+                        else:
+                            logger.warning(f"Cannot determine OTP type for {field.label} and no providers available, skipping")
+                            continue
+                    
+                    success = await self._handle_otp_field(page, field, otp_type)
+                    if not success:
+                        logger.warning(f"OTP handling failed for {field.label}, field may be empty")
                 continue
 
             value = data[field.name]
@@ -1100,6 +1131,172 @@ class TestValidationAgent(BaseAgent):
                 for t in results.test_results
             ]
         }
+
+    def _init_otp_handler(self):
+        """Initialize OTP handler with available providers"""
+        try:
+            from utils.otp_handler import get_otp_handler
+            from utils.otp_providers.gmail_provider import GmailOTPProvider
+            from utils.otp_providers.sms_provider import Fast2SMSProvider
+            
+            self.otp_handler = get_otp_handler()
+            
+            # Register Gmail provider if credentials available
+            if os.getenv('GMAIL_EMAIL') and os.getenv('GMAIL_APP_PASSWORD'):
+                try:
+                    gmail_provider = GmailOTPProvider()
+                    self.otp_handler.register_provider('email', gmail_provider)
+                    logger.info("✓ Gmail OTP provider registered")
+                except Exception as e:
+                    logger.debug(f"Gmail OTP provider not available: {e}")
+            
+            # Register SMS provider if credentials available
+            if os.getenv('FAST2SMS_API_KEY') and os.getenv('FAST2SMS_NUMBER'):
+                try:
+                    sms_provider = Fast2SMSProvider()
+                    self.otp_handler.register_provider('sms', sms_provider)
+                    logger.info("✓ Fast2SMS OTP provider registered")
+                except Exception as e:
+                    logger.debug(f"Fast2SMS OTP provider not available: {e}")
+            
+        except ImportError as e:
+            logger.debug(f"OTP handler not available: {e}")
+            self.otp_handler = None
+    
+    def _is_otp_field(self, field: FormField) -> bool:
+        """
+        Detect if a field is an OTP field based on label/name
+        
+        Args:
+            field: Form field to check
+            
+        Returns:
+            True if field appears to be OTP field
+        """
+        # More specific OTP keywords to avoid false positives
+        otp_keywords = [
+            'otp', 
+            'one time password',
+            'one-time password',
+            'verification code', 
+            'verify code',
+            'verification otp',
+            'email verification code',
+            'mobile verification code',
+            'sms verification',
+            'मोबाइल कोड',  # Hindi: mobile code
+            'ओटीपी',  # Hindi: OTP
+        ]
+        
+        # Exclude common false positives (address/location fields)
+        exclude_keywords = [
+            'postal', 'post code', 'zip', 'zip code',
+            'area code', 'pin code', 'pincode',
+            'address', 'location', 'country code'
+        ]
+        
+        field_text = (field.label + ' ' + (field.name or '')).lower()
+        
+        # Check for exclusions first
+        if any(excl in field_text for excl in exclude_keywords):
+            return False
+        
+        # Check for OTP keywords
+        return any(keyword in field_text for keyword in otp_keywords)
+    
+    async def _handle_otp_field(
+        self,
+        page: Page,
+        field: FormField,
+        otp_type: str = 'email'
+    ) -> bool:
+        """
+        Handle OTP field - trigger send, wait for OTP, fill field
+        
+        Args:
+            page: Playwright page
+            field: OTP field from schema
+            otp_type: 'email' or 'sms'
+            
+        Returns:
+            True if OTP filled successfully
+        """
+        if not self.otp_handler:
+            logger.warning(f"⚠️ OTP handler not initialized, skipping {field.label}")
+            return False
+        
+        try:
+            logger.info(f"📱 Handling OTP field: {field.label}")
+            
+            # Step 1: Look for "Send OTP" button and click it
+            send_otp_button = await self._find_send_otp_button(page)
+            if send_otp_button:
+                logger.info("📤 Clicking 'Send OTP' button...")
+                await send_otp_button.click()
+                await asyncio.sleep(2)  # Wait for OTP to be sent
+            else:
+                logger.info("ℹ️ No 'Send OTP' button found, assuming OTP auto-sent")
+            
+            # Step 2: Wait for OTP
+            timeout = int(os.getenv('OTP_TIMEOUT', '60'))
+            otp = await self.otp_handler.get_otp(otp_type=otp_type, timeout=timeout)
+            
+            if not otp:
+                logger.error(f"❌ Failed to receive OTP for {field.label}")
+                return False
+            
+            # Step 3: Fill OTP field
+            logger.info(f"✍️ Filling OTP field: {field.selector}")
+            await self._fill_text_input(page, field.selector, otp)
+            await asyncio.sleep(1)
+            
+            # Step 4: Look for "Verify OTP" button and click it
+            verify_button = await self._find_verify_otp_button(page)
+            if verify_button:
+                logger.info("✅ Clicking 'Verify OTP' button...")
+                await verify_button.click()
+                await asyncio.sleep(2)
+            
+            logger.info(f"✅ OTP handled successfully for {field.label}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"❌ OTP handling failed for {field.label}: {e}")
+            return False
+    
+    async def _find_send_otp_button(self, page: Page):
+        """Find 'Send OTP' button on page"""
+        patterns = [
+            "text=/send.*otp/i",
+            "text=/get.*otp/i",
+            "text=/request.*otp/i",
+            "button:has-text('Send')",
+            "button:has-text('Get Code')"
+        ]
+        
+        for pattern in patterns:
+            button = page.locator(pattern).first
+            if await button.count() > 0:
+                return button
+        
+        return None
+    
+    async def _find_verify_otp_button(self, page: Page):
+        """Find 'Verify OTP' button on page"""
+        patterns = [
+            "text=/verify.*otp/i",
+            "text=/verify.*code/i",
+            "text=/confirm/i",
+            "button:has-text('Verify')",
+            "button:has-text('Submit')"
+        ]
+        
+        for pattern in patterns:
+            button = page.locator(pattern).first
+            if await button.count() > 0:
+                return button
+        
+        return None
 
 
 # For testing
