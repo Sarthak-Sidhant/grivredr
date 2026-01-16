@@ -2,6 +2,7 @@
 Base Agent Class with Reflection and Cost Tracking
 All specialized agents inherit from this
 """
+
 import time
 import logging
 import asyncio
@@ -11,7 +12,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum
 
-from config.ai_client import ai_client
+from config.multi_provider_client import ai_client
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -19,6 +20,7 @@ logger = logging.getLogger(__name__)
 
 class AgentStatus(Enum):
     """Agent execution status"""
+
     IDLE = "idle"
     WORKING = "working"
     REFLECTING = "reflecting"
@@ -30,6 +32,7 @@ class AgentStatus(Enum):
 @dataclass
 class AgentAction:
     """Records a single agent action"""
+
     timestamp: datetime
     action_type: str
     description: str
@@ -42,6 +45,7 @@ class AgentAction:
 @dataclass
 class AgentAttempt:
     """Records one complete attempt"""
+
     attempt_number: int
     actions: List[AgentAction] = field(default_factory=list)
     strategy: str = ""
@@ -65,7 +69,9 @@ class CostTracker:
         self.calls_by_model = {}
         self.calls_by_agent = {}
 
-    def track_call(self, model: str, input_tokens: int, output_tokens: int, agent_name: str) -> float:
+    def track_call(
+        self, model: str, input_tokens: int, output_tokens: int, agent_name: str
+    ) -> float:
         """Calculate and track cost of an API call"""
         if model not in self.COSTS:
             logger.warning(f"Unknown model: {model}")
@@ -73,8 +79,10 @@ class CostTracker:
 
         input_cost_per_m, output_cost_per_m = self.COSTS[model]
 
-        cost = (input_tokens / 1_000_000 * input_cost_per_m +
-                output_tokens / 1_000_000 * output_cost_per_m)
+        cost = (
+            input_tokens / 1_000_000 * input_cost_per_m
+            + output_tokens / 1_000_000 * output_cost_per_m
+        )
 
         self.total_cost += cost
 
@@ -128,7 +136,7 @@ class BaseAgent(ABC):
         for attempt_num in range(1, self.max_attempts + 1):
             self.current_attempt = AgentAttempt(
                 attempt_number=attempt_num,
-                strategy=await self._plan_strategy(task, attempt_num)
+                strategy=await self._plan_strategy(task, attempt_num),
             )
 
             self._set_status(AgentStatus.WORKING)
@@ -140,7 +148,9 @@ class BaseAgent(ABC):
                 # Record success
                 self.current_attempt.success = result.get("success", False)
                 self.current_attempt.outcome = result.get("message", "")
-                self.current_attempt.total_cost = sum(a.cost for a in self.current_attempt.actions)
+                self.current_attempt.total_cost = sum(
+                    a.cost for a in self.current_attempt.actions
+                )
 
                 self.attempts.append(self.current_attempt)
 
@@ -154,10 +164,14 @@ class BaseAgent(ABC):
                 reflection = await self._reflect_on_failure(result)
 
                 if self._trigger_reflection(reflection):
-                    logger.info(f"🤔 [{self.name}] Reflecting: {reflection['reasoning']}")
+                    logger.info(
+                        f"🤔 [{self.name}] Reflecting: {reflection['reasoning']}"
+                    )
 
                 if attempt_num < self.max_attempts:
-                    logger.info(f"🔄 [{self.name}] Retrying... ({attempt_num + 1}/{self.max_attempts})")
+                    logger.info(
+                        f"🔄 [{self.name}] Retrying... ({attempt_num + 1}/{self.max_attempts})"
+                    )
                     await asyncio.sleep(2)  # Brief pause
                 else:
                     # Max attempts reached, ask human
@@ -183,7 +197,7 @@ class BaseAgent(ABC):
             "success": False,
             "error": "Max attempts reached",
             "attempts": len(self.attempts),
-            "total_cost": sum(a.total_cost for a in self.attempts)
+            "total_cost": sum(a.total_cost for a in self.attempts),
         }
 
     async def _plan_strategy(self, task: Dict[str, Any], attempt_num: int) -> str:
@@ -199,7 +213,7 @@ class BaseAgent(ABC):
                 "attempt": a.attempt_number,
                 "strategy": a.strategy,
                 "outcome": a.outcome,
-                "success": a.success
+                "success": a.success,
             }
             for a in self.attempts
         ]
@@ -220,7 +234,7 @@ Return JSON: {{"strategy": "description", "key_changes": ["change1", "change2"]}
             model=ai_client.models["balanced"],
             messages=[{"role": "user", "content": prompt}],
             temperature=0.3,
-            max_tokens=500
+            max_tokens=500,
         )
         elapsed = time.time() - start_time
 
@@ -230,7 +244,7 @@ Return JSON: {{"strategy": "description", "key_changes": ["change1", "change2"]}
             model=ai_client.models["balanced"],
             input_tokens=usage.input_tokens,
             output_tokens=usage.output_tokens,
-            agent_name=self.name
+            agent_name=self.name,
         )
 
         strategy_response = response.content[0].text
@@ -243,7 +257,7 @@ Return JSON: {{"strategy": "description", "key_changes": ["change1", "change2"]}
             result=strategy_response,
             success=True,
             cost=cost,
-            tokens_used=usage.input_tokens + usage.output_tokens
+            tokens_used=usage.input_tokens + usage.output_tokens,
         )
         self.current_attempt.actions.append(action)
 
@@ -289,7 +303,7 @@ Return JSON: {{
             model=ai_client.models["balanced"],
             messages=[{"role": "user", "content": prompt}],
             temperature=0.2,
-            max_tokens=800
+            max_tokens=800,
         )
 
         usage = response.usage
@@ -297,7 +311,7 @@ Return JSON: {{
             model=ai_client.models["balanced"],
             input_tokens=usage.input_tokens,
             output_tokens=usage.output_tokens,
-            agent_name=f"{self.name}_reflection"
+            agent_name=f"{self.name}_reflection",
         )
 
         reflection = response.content[0].text
@@ -307,14 +321,20 @@ Return JSON: {{
 
         return {"reflection": reflection, "cost": cost}
 
-    async def _request_human_help(self, task: Dict[str, Any], reflection: Dict[str, Any]) -> Dict[str, Any]:
+    async def _request_human_help(
+        self, task: Dict[str, Any], reflection: Dict[str, Any]
+    ) -> Dict[str, Any]:
         """
         Request human intervention
         """
-        logger.warning(f"🙋 [{self.name}] Requesting human help after {len(self.attempts)} attempts")
+        logger.warning(
+            f"🙋 [{self.name}] Requesting human help after {len(self.attempts)} attempts"
+        )
 
         if self.on_human_needed:
-            return await self.on_human_needed(self.name, task, reflection, self.attempts)
+            return await self.on_human_needed(
+                self.name, task, reflection, self.attempts
+            )
 
         # Default: no human available, return failure
         return {"continue": False}
@@ -326,7 +346,7 @@ Return JSON: {{
         result: Any,
         success: bool,
         cost: float = 0.0,
-        tokens: int = 0
+        tokens: int = 0,
     ):
         """Record an action taken by the agent"""
         action = AgentAction(
@@ -336,7 +356,7 @@ Return JSON: {{
             result=result,
             success=success,
             cost=cost,
-            tokens_used=tokens
+            tokens_used=tokens,
         )
 
         if self.current_attempt:
@@ -349,6 +369,7 @@ Return JSON: {{
                     await self.on_action(self.name, action)
                 except Exception as e:
                     logger.error(f"Callback error in on_action: {e}")
+
             asyncio.create_task(safe_callback())
 
     def _set_status(self, status: AgentStatus):
@@ -361,6 +382,7 @@ Return JSON: {{
                     await self.on_status_change(self.name, status)
                 except Exception as e:
                     logger.error(f"Callback error in on_status_change: {e}")
+
             asyncio.create_task(safe_callback())
 
     def _trigger_reflection(self, reflection: Dict[str, Any]) -> bool:
@@ -379,5 +401,5 @@ Return JSON: {{
             "total_attempts": len(self.attempts),
             "successful_attempts": sum(1 for a in self.attempts if a.success),
             "total_cost": self.get_total_cost(),
-            "total_actions": sum(len(a.actions) for a in self.attempts)
+            "total_actions": sum(len(a.actions) for a in self.attempts),
         }

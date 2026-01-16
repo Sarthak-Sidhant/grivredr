@@ -2,6 +2,7 @@
 JavaScript Runtime Monitor - Captures dynamic JavaScript behavior
 Injects monitoring code to track AJAX calls, DOM mutations, and event handlers
 """
+
 import asyncio
 import logging
 from typing import Dict, List, Any, Optional
@@ -260,7 +261,9 @@ class JSRuntimeMonitor:
             logger.info("🖱️ Interacting with form to trigger JS...")
 
             # Find all input fields
-            inputs = await page.query_selector_all(f"{form_selector} input[type='text'], {form_selector} input[type='email']")
+            inputs = await page.query_selector_all(
+                f"{form_selector} input[type='text'], {form_selector} input[type='email']"
+            )
 
             for i, input_elem in enumerate(inputs[:3]):  # Limit to first 3
                 try:
@@ -314,7 +317,7 @@ class JSRuntimeMonitor:
             "validation_rules": [],
             "has_ajax": False,
             "has_dynamic_content": False,
-            "requires_specific_order": False
+            "requires_specific_order": False,
         }
 
         dropdown_changes = {}
@@ -324,28 +327,35 @@ class JSRuntimeMonitor:
 
             # Track AJAX calls
             if event_type == "ajax_complete":
-                analysis["ajax_calls"].append({
-                    "url": event.get("url"),
-                    "method": event.get("method"),
-                    "status": event.get("status")
-                })
+                analysis["ajax_calls"].append(
+                    {
+                        "url": event.get("url"),
+                        "method": event.get("method"),
+                        "status": event.get("status"),
+                    }
+                )
                 analysis["has_ajax"] = True
 
             # Track fetch calls
             elif event_type == "fetch_complete":
-                analysis["fetch_calls"].append({
-                    "url": event.get("url"),
-                    "status": event.get("status")
-                })
+                analysis["fetch_calls"].append(
+                    {"url": event.get("url"), "status": event.get("status")}
+                )
                 analysis["has_ajax"] = True
 
             # Track dynamically added fields
-            elif event_type == "dom_added" and event.get("tagName") in ["input", "select", "textarea"]:
-                analysis["dynamic_fields"].append({
-                    "tag": event.get("tagName"),
-                    "id": event.get("id"),
-                    "class": event.get("className")
-                })
+            elif event_type == "dom_added" and event.get("tagName") in [
+                "input",
+                "select",
+                "textarea",
+            ]:
+                analysis["dynamic_fields"].append(
+                    {
+                        "tag": event.get("tagName"),
+                        "id": event.get("id"),
+                        "class": event.get("className"),
+                    }
+                )
                 analysis["has_dynamic_content"] = True
 
             # Track dropdown option additions (indicates cascading)
@@ -357,25 +367,28 @@ class JSRuntimeMonitor:
 
             # Track validation rules
             elif event_type == "validation_error":
-                analysis["validation_rules"].append({
-                    "element": event.get("element"),
-                    "id": event.get("id"),
-                    "message": event.get("validationMessage")
-                })
+                analysis["validation_rules"].append(
+                    {
+                        "element": event.get("element"),
+                        "id": event.get("id"),
+                        "message": event.get("validationMessage"),
+                    }
+                )
 
         # Identify cascading dropdowns (dropdowns that get options added dynamically)
         for select_id, options in dropdown_changes.items():
             if len(options) > 1:  # More than 1 option added = likely cascading
-                analysis["cascading_dropdowns"].append({
-                    "select": select_id,
-                    "options_added": len(options)
-                })
+                analysis["cascading_dropdowns"].append(
+                    {"select": select_id, "options_added": len(options)}
+                )
                 analysis["requires_specific_order"] = True
 
-        logger.info(f"📊 Analysis: {analysis['total_events']} events, "
-                   f"AJAX: {analysis['has_ajax']}, "
-                   f"Dynamic: {analysis['has_dynamic_content']}, "
-                   f"Cascading: {len(analysis['cascading_dropdowns'])}")
+        logger.info(
+            f"📊 Analysis: {analysis['total_events']} events, "
+            f"AJAX: {analysis['has_ajax']}, "
+            f"Dynamic: {analysis['has_dynamic_content']}, "
+            f"Cascading: {len(analysis['cascading_dropdowns'])}"
+        )
 
         return analysis
 
@@ -394,18 +407,28 @@ class JSRuntimeMonitor:
         summary_parts = []
 
         if analysis["has_ajax"]:
-            summary_parts.append(f"✓ Detected {len(analysis['ajax_calls'])} AJAX calls - form uses dynamic loading")
+            summary_parts.append(
+                f"✓ Detected {len(analysis['ajax_calls'])} AJAX calls - form uses dynamic loading"
+            )
 
         if analysis["cascading_dropdowns"]:
-            summary_parts.append(f"✓ Found {len(analysis['cascading_dropdowns'])} cascading dropdowns - must select in order")
+            summary_parts.append(
+                f"✓ Found {len(analysis['cascading_dropdowns'])} cascading dropdowns - must select in order"
+            )
 
         if analysis["dynamic_fields"]:
-            summary_parts.append(f"✓ {len(analysis['dynamic_fields'])} fields added dynamically")
+            summary_parts.append(
+                f"✓ {len(analysis['dynamic_fields'])} fields added dynamically"
+            )
 
         if analysis["validation_rules"]:
-            summary_parts.append(f"✓ {len(analysis['validation_rules'])} client-side validation rules detected")
+            summary_parts.append(
+                f"✓ {len(analysis['validation_rules'])} client-side validation rules detected"
+            )
 
         if not summary_parts:
-            summary_parts.append("Form appears to be static with no dynamic JavaScript behavior")
+            summary_parts.append(
+                "Form appears to be static with no dynamic JavaScript behavior"
+            )
 
         return "\n".join(summary_parts)

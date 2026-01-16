@@ -20,6 +20,7 @@ load_dotenv()
 
 class CostTracker:
     """Track API costs"""
+
     PRICING = {
         "claude-sonnet-4-5-20250929": {"input": 3.0, "output": 15.0},
         "claude-opus-4-5-20250929": {"input": 15.0, "output": 75.0},
@@ -33,8 +34,9 @@ class CostTracker:
 
     def add(self, model: str, input_tokens: int, output_tokens: int):
         pricing = self.PRICING.get(model, {"input": 3.0, "output": 15.0})
-        cost = (input_tokens * pricing["input"] / 1_000_000) + \
-               (output_tokens * pricing["output"] / 1_000_000)
+        cost = (input_tokens * pricing["input"] / 1_000_000) + (
+            output_tokens * pricing["output"] / 1_000_000
+        )
         self.total_input_tokens += input_tokens
         self.total_output_tokens += output_tokens
         self.total_cost += cost
@@ -116,7 +118,9 @@ class PlaywrightTools:
             is_searchable = False
 
             # Check for Select2 container (common in ASP.NET forms like Smart Ranchi)
-            select2_container = self.page.locator(f".select2-container[id*='{selector.replace('#', '').replace('[', '').replace(']', '')}'], .select2-container").first
+            select2_container = self.page.locator(
+                f".select2-container[id*='{selector.replace('#', '').replace('[', '').replace(']', '')}'], .select2-container"
+            ).first
 
             # Try to detect which framework
             has_select2 = await self.page.locator(".select2-container").count() > 0
@@ -130,21 +134,29 @@ class PlaywrightTools:
                 # Select2 creates a container next to the original select element
                 try:
                     # Click the Select2 container to open dropdown
-                    s2_choice = self.page.locator(f"{selector} + .select2-container .select2-choice, {selector} ~ .select2-container .select2-choice, .select2-container .select2-choice").first
+                    s2_choice = self.page.locator(
+                        f"{selector} + .select2-container .select2-choice, {selector} ~ .select2-container .select2-choice, .select2-container .select2-choice"
+                    ).first
                     if await s2_choice.count() > 0:
                         await s2_choice.click(force=True)
                     else:
                         # Try clicking the container directly
-                        await self.page.locator(".select2-container").first.click(force=True)
+                        await self.page.locator(".select2-container").first.click(
+                            force=True
+                        )
 
                     await asyncio.sleep(1.0)  # Select2 needs more time
 
                     # Check if dropdown opened
-                    dropdown_visible = await self.page.locator(".select2-drop, .select2-dropdown").first.is_visible()
+                    dropdown_visible = await self.page.locator(
+                        ".select2-drop, .select2-dropdown"
+                    ).first.is_visible()
 
                     if dropdown_visible:
                         # Extract Select2 options
-                        option_elements = self.page.locator(".select2-results li, .select2-results .select2-result-selectable")
+                        option_elements = self.page.locator(
+                            ".select2-results li, .select2-results .select2-result-selectable"
+                        )
                         count = await option_elements.count()
 
                         for i in range(min(count, 100)):
@@ -154,12 +166,23 @@ class PlaywrightTools:
                                     text = await opt.text_content()
                                     if text and text.strip():
                                         # Get data-value if available
-                                        value = await opt.get_attribute("data-value") or await opt.get_attribute("id") or text
-                                        options.append({"text": text.strip(), "value": str(value).strip()})
+                                        value = (
+                                            await opt.get_attribute("data-value")
+                                            or await opt.get_attribute("id")
+                                            or text
+                                        )
+                                        options.append(
+                                            {
+                                                "text": text.strip(),
+                                                "value": str(value).strip(),
+                                            }
+                                        )
                             except:
                                 pass
 
-                        is_searchable = await self.page.locator(".select2-search input").count() > 0
+                        is_searchable = (
+                            await self.page.locator(".select2-search input").count() > 0
+                        )
 
                     # Close dropdown
                     await self.page.keyboard.press("Escape")
@@ -175,7 +198,9 @@ class PlaywrightTools:
                             text = await opt.text_content()
                             value = await opt.get_attribute("value") or text
                             if text and text.strip():
-                                options.append({"text": text.strip(), "value": str(value).strip()})
+                                options.append(
+                                    {"text": text.strip(), "value": str(value).strip()}
+                                )
                     except:
                         pass
 
@@ -184,12 +209,16 @@ class PlaywrightTools:
                 framework = "ant_design"
 
                 # Find parent ant-select wrapper and click it
-                wrapper = element.locator("xpath=ancestor::div[contains(@class,'ant-select')]").first
+                wrapper = element.locator(
+                    "xpath=ancestor::div[contains(@class,'ant-select')]"
+                ).first
                 await wrapper.click(force=True)
                 await asyncio.sleep(0.8)
 
                 # Check if dropdown opened
-                dropdown_visible = await self.page.locator(".ant-select-dropdown").first.is_visible()
+                dropdown_visible = await self.page.locator(
+                    ".ant-select-dropdown"
+                ).first.is_visible()
 
                 if dropdown_visible:
                     # Extract all options
@@ -202,7 +231,9 @@ class PlaywrightTools:
                             if await opt.is_visible():
                                 text = await opt.text_content()
                                 value = await opt.get_attribute("data-value") or text
-                                options.append({"text": text.strip(), "value": str(value).strip()})
+                                options.append(
+                                    {"text": text.strip(), "value": str(value).strip()}
+                                )
                         except:
                             pass
 
@@ -218,7 +249,7 @@ class PlaywrightTools:
                 "framework": framework,
                 "is_searchable": is_searchable,
                 "option_count": len(options),
-                "options": options
+                "options": options,
             }
 
         except Exception as e:
@@ -237,22 +268,30 @@ class PlaywrightTools:
             if has_select2 and not has_ant:
                 # === SELECT2 HANDLING ===
                 # Click Select2 container to open
-                s2_choice = self.page.locator(f"{selector} + .select2-container .select2-choice, .select2-container .select2-choice").first
+                s2_choice = self.page.locator(
+                    f"{selector} + .select2-container .select2-choice, .select2-container .select2-choice"
+                ).first
                 if await s2_choice.count() > 0:
                     await s2_choice.click(force=True)
                 else:
-                    await self.page.locator(".select2-container").first.click(force=True)
+                    await self.page.locator(".select2-container").first.click(
+                        force=True
+                    )
 
                 await asyncio.sleep(1.0)
 
                 # Type in search if available
-                search_input = self.page.locator(".select2-search input, .select2-input")
+                search_input = self.page.locator(
+                    ".select2-search input, .select2-input"
+                )
                 if await search_input.count() > 0 and value:
                     await search_input.fill(value)
                     await asyncio.sleep(0.8)
 
                 # Find and click matching option
-                options = self.page.locator(".select2-results li, .select2-result-selectable")
+                options = self.page.locator(
+                    ".select2-results li, .select2-result-selectable"
+                )
                 count = await options.count()
 
                 for i in range(count):
@@ -262,7 +301,11 @@ class PlaywrightTools:
                         if text and (not value or value.lower() in text.lower()):
                             await opt.click()
                             await asyncio.sleep(0.5)
-                            return {"success": True, "selected": text.strip(), "framework": "select2"}
+                            return {
+                                "success": True,
+                                "selected": text.strip(),
+                                "framework": "select2",
+                            }
 
                 # Fallback: first visible option
                 for i in range(count):
@@ -272,15 +315,26 @@ class PlaywrightTools:
                         if text and text.strip():
                             await opt.click()
                             await asyncio.sleep(0.5)
-                            return {"success": True, "selected": text.strip(), "fallback": True, "framework": "select2"}
+                            return {
+                                "success": True,
+                                "selected": text.strip(),
+                                "fallback": True,
+                                "framework": "select2",
+                            }
 
                 await self.page.keyboard.press("Escape")
-                return {"success": False, "error": "No matching option found", "framework": "select2"}
+                return {
+                    "success": False,
+                    "error": "No matching option found",
+                    "framework": "select2",
+                }
 
             else:
                 # === ANT-DESIGN HANDLING ===
                 # Click to open
-                wrapper = element.locator("xpath=ancestor::div[contains(@class,'ant-select')]").first
+                wrapper = element.locator(
+                    "xpath=ancestor::div[contains(@class,'ant-select')]"
+                ).first
                 await wrapper.click(force=True)
                 await asyncio.sleep(0.5)
 
@@ -302,16 +356,29 @@ class PlaywrightTools:
                         text = await opt.text_content()
                         if not value or value.lower() in text.lower():
                             await opt.click()
-                            return {"success": True, "selected": text.strip(), "framework": "ant_design"}
+                            return {
+                                "success": True,
+                                "selected": text.strip(),
+                                "framework": "ant_design",
+                            }
 
                 # Fallback: select first option
                 first = self.page.locator(".ant-select-item-option").first
                 if await first.is_visible():
                     text = await first.text_content()
                     await first.click()
-                    return {"success": True, "selected": text.strip(), "fallback": True, "framework": "ant_design"}
+                    return {
+                        "success": True,
+                        "selected": text.strip(),
+                        "fallback": True,
+                        "framework": "ant_design",
+                    }
 
-                return {"success": False, "error": "No matching option found", "framework": "ant_design"}
+                return {
+                    "success": False,
+                    "error": "No matching option found",
+                    "framework": "ant_design",
+                }
 
         except Exception as e:
             return {"success": False, "error": str(e)}
@@ -326,7 +393,9 @@ class PlaywrightTools:
         """
         return await self.page.evaluate(js_code)
 
-    async def check_cascading_dependency(self, parent_selector: str, child_selector: str) -> dict:
+    async def check_cascading_dependency(
+        self, parent_selector: str, child_selector: str
+    ) -> dict:
         """Check if selecting parent affects child dropdown options"""
         try:
             # Get child options BEFORE selecting parent
@@ -349,7 +418,7 @@ class PlaywrightTools:
                 "parent_selected": parent_result.get("selected"),
                 "child_options_before": before_count,
                 "child_options_after": after_count,
-                "child_options": child_after.get("options", [])[:10]  # First 10
+                "child_options": child_after.get("options", [])[:10],  # First 10
             }
 
         except Exception as e:
@@ -369,8 +438,7 @@ class HybridFormDiscovery:
         self.api_key = os.getenv("api_key")
         self.cost_tracker = CostTracker()
         self.client = anthropic.Anthropic(
-            api_key=self.api_key,
-            base_url="https://ai.megallm.io"
+            api_key=self.api_key, base_url="https://ai.megallm.io"
         )
 
     def _build_tools(self):
@@ -379,11 +447,7 @@ class HybridFormDiscovery:
             {
                 "name": "get_all_form_fields",
                 "description": "Extract all form fields from the current page. Returns field IDs, types, labels, selectors, and whether they're required. Call this FIRST to understand the form structure.",
-                "input_schema": {
-                    "type": "object",
-                    "properties": {},
-                    "required": []
-                }
+                "input_schema": {"type": "object", "properties": {}, "required": []},
             },
             {
                 "name": "get_dropdown_options",
@@ -393,11 +457,11 @@ class HybridFormDiscovery:
                     "properties": {
                         "selector": {
                             "type": "string",
-                            "description": "CSS selector for the dropdown field (e.g., '#category_id')"
+                            "description": "CSS selector for the dropdown field (e.g., '#category_id')",
                         }
                     },
-                    "required": ["selector"]
-                }
+                    "required": ["selector"],
+                },
             },
             {
                 "name": "select_dropdown_option",
@@ -407,15 +471,15 @@ class HybridFormDiscovery:
                     "properties": {
                         "selector": {
                             "type": "string",
-                            "description": "CSS selector for the dropdown"
+                            "description": "CSS selector for the dropdown",
                         },
                         "value": {
                             "type": "string",
-                            "description": "Value or partial text to search for and select"
-                        }
+                            "description": "Value or partial text to search for and select",
+                        },
                     },
-                    "required": ["selector", "value"]
-                }
+                    "required": ["selector", "value"],
+                },
             },
             {
                 "name": "check_cascading_dependency",
@@ -425,15 +489,15 @@ class HybridFormDiscovery:
                     "properties": {
                         "parent_selector": {
                             "type": "string",
-                            "description": "CSS selector for the parent dropdown"
+                            "description": "CSS selector for the parent dropdown",
                         },
                         "child_selector": {
                             "type": "string",
-                            "description": "CSS selector for the child dropdown"
-                        }
+                            "description": "CSS selector for the child dropdown",
+                        },
                     },
-                    "required": ["parent_selector", "child_selector"]
-                }
+                    "required": ["parent_selector", "child_selector"],
+                },
             },
             {
                 "name": "complete_discovery",
@@ -443,12 +507,12 @@ class HybridFormDiscovery:
                     "properties": {
                         "form_structure": {
                             "type": "object",
-                            "description": "Complete form structure with all fields, options, and relationships"
+                            "description": "Complete form structure with all fields, options, and relationships",
                         }
                     },
-                    "required": ["form_structure"]
-                }
-            }
+                    "required": ["form_structure"],
+                },
+            },
         ]
 
     async def discover(self, url: str, headless: bool = True) -> dict:
@@ -542,7 +606,12 @@ WORKFLOW:
 
 IMPORTANT: Do not stop until you have fetched options from ALL dropdown fields. Each dropdown must have its options populated."""
 
-        messages = [{"role": "user", "content": "Analyze this form completely. Follow the WORKFLOW exactly - get fields, get dropdown options, select parents to load children, then call complete_discovery. Do NOT over-explore."}]
+        messages = [
+            {
+                "role": "user",
+                "content": "Analyze this form completely. Follow the WORKFLOW exactly - get fields, get dropdown options, select parents to load children, then call complete_discovery. Do NOT over-explore.",
+            }
+        ]
 
         max_iterations = 20
         form_structure = None
@@ -555,13 +624,13 @@ IMPORTANT: Do not stop until you have fetched options from ALL dropdown fields. 
                 max_tokens=4096,
                 system=system_prompt,
                 tools=self._build_tools(),
-                messages=messages
+                messages=messages,
             )
 
             cost = self.cost_tracker.add(
                 "claude-sonnet-4-5-20250929",
                 response.usage.input_tokens,
-                response.usage.output_tokens
+                response.usage.output_tokens,
             )
             print(f"${cost:.4f}")
 
@@ -582,16 +651,16 @@ IMPORTANT: Do not stop until you have fetched options from ALL dropdown fields. 
                     if tool_name == "get_all_form_fields":
                         result = await tools.get_all_form_fields()
                     elif tool_name == "get_dropdown_options":
-                        result = await tools.get_dropdown_options(tool_input["selector"])
+                        result = await tools.get_dropdown_options(
+                            tool_input["selector"]
+                        )
                     elif tool_name == "select_dropdown_option":
                         result = await tools.select_dropdown_option(
-                            tool_input["selector"],
-                            tool_input["value"]
+                            tool_input["selector"], tool_input["value"]
                         )
                     elif tool_name == "check_cascading_dependency":
                         result = await tools.check_cascading_dependency(
-                            tool_input["parent_selector"],
-                            tool_input["child_selector"]
+                            tool_input["parent_selector"], tool_input["child_selector"]
                         )
                     elif tool_name == "complete_discovery":
                         form_structure = tool_input["form_structure"]
@@ -600,11 +669,13 @@ IMPORTANT: Do not stop until you have fetched options from ALL dropdown fields. 
                     else:
                         result = {"error": f"Unknown tool: {tool_name}"}
 
-                    tool_results.append({
-                        "type": "tool_result",
-                        "tool_use_id": block.id,
-                        "content": json.dumps(result)
-                    })
+                    tool_results.append(
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": block.id,
+                            "content": json.dumps(result),
+                        }
+                    )
 
             if tool_results:
                 messages.append({"role": "user", "content": tool_results})
@@ -624,7 +695,10 @@ IMPORTANT: Do not stop until you have fetched options from ALL dropdown fields. 
         templates_section = ""
         try:
             from knowledge.pattern_library import PatternLibrary
-            pl = PatternLibrary(enable_vector_store=False)  # Skip vector store for speed
+
+            pl = PatternLibrary(
+                enable_vector_store=False
+            )  # Skip vector store for speed
             template_info = pl.get_templates_for_schema(form_structure)
 
             if template_info.get("ui_framework") != "unknown":
@@ -720,13 +794,13 @@ Generate ONLY the Python code."""
         response = self.client.messages.create(
             model="claude-sonnet-4-5-20250929",
             max_tokens=8000,
-            messages=[{"role": "user", "content": prompt}]
+            messages=[{"role": "user", "content": prompt}],
         )
 
         self.cost_tracker.add(
             "claude-sonnet-4-5-20250929",
             response.usage.input_tokens,
-            response.usage.output_tokens
+            response.usage.output_tokens,
         )
 
         code = response.content[0].text
@@ -737,7 +811,14 @@ Generate ONLY the Python code."""
 
         return code.strip()
 
-    def save(self, code: str, form_structure: dict, portal_name: str, state: str = "unknown", district: str = "unknown") -> Path:
+    def save(
+        self,
+        code: str,
+        form_structure: dict,
+        portal_name: str,
+        state: str = "unknown",
+        district: str = "unknown",
+    ) -> Path:
         """
         Save scraper and metadata using portal manager
 
@@ -757,11 +838,11 @@ Generate ONLY the Python code."""
 
         # Save scraper to old location
         scraper_path = portal_dir / f"{portal_name}_scraper.py"
-        with open(scraper_path, 'w') as f:
+        with open(scraper_path, "w") as f:
             f.write(code)
 
         # Save structure to old location
-        with open(portal_dir / f"{portal_name}_structure.json", 'w') as f:
+        with open(portal_dir / f"{portal_name}_structure.json", "w") as f:
             json.dump(form_structure, f, indent=2)
 
         # Try to use portal manager for unified structure
@@ -780,9 +861,14 @@ Generate ONLY the Python code."""
             field_mappings = {}
 
             # First check if AI provided dropdown_context directly (preferred)
-            if "dropdown_context" in form_structure and form_structure["dropdown_context"]:
+            if (
+                "dropdown_context" in form_structure
+                and form_structure["dropdown_context"]
+            ):
                 dropdowns = form_structure["dropdown_context"]
-                print(f"   Using AI-provided dropdown_context with {len(dropdowns)} dropdowns")
+                print(
+                    f"   Using AI-provided dropdown_context with {len(dropdowns)} dropdowns"
+                )
 
             # Extract cascading relationships if provided
             if "cascading_relationships" in form_structure:
@@ -793,7 +879,7 @@ Generate ONLY the Python code."""
                         "parent": rel.get("parent", ""),
                         "child": rel.get("child", ""),
                         "parent_field": parent_field,
-                        "child_field": child_field
+                        "child_field": child_field,
                     }
 
             # Also extract from fields array
@@ -802,26 +888,35 @@ Generate ONLY the Python code."""
                 field_name = field.get("name", "")
                 options = field.get("options", [])
 
-                if options and field.get("type") in ["select", "dropdown", "searchable_select"]:
+                if options and field.get("type") in [
+                    "select",
+                    "dropdown",
+                    "searchable_select",
+                ]:
                     # Build dropdown context with options (if not already in dropdown_context)
                     if field_name not in dropdowns:
                         # Handle both list of strings and list of dicts
                         if options and isinstance(options[0], dict):
-                            opt_mapping = {opt.get("text", ""): opt.get("value", opt.get("text", "")) for opt in options}
+                            opt_mapping = {
+                                opt.get("text", ""): opt.get(
+                                    "value", opt.get("text", "")
+                                )
+                                for opt in options
+                            }
                         else:
                             opt_mapping = {opt: opt for opt in options}
 
                         dropdowns[field_name] = {
                             "selector": field.get("selector", ""),
                             "searchable": field.get("searchable", False),
-                            "options": opt_mapping
+                            "options": opt_mapping,
                         }
 
                     # Track field mappings
                     field_mappings[field_name] = {
                         "selector": field.get("selector", ""),
                         "type": field.get("type", ""),
-                        "required": field.get("required", False)
+                        "required": field.get("required", False),
                     }
 
                 # Track cascade relationships from fields
@@ -832,29 +927,35 @@ Generate ONLY the Python code."""
                             "parent": field.get("selector", ""),
                             "child": f"#{field['cascades_to']}",  # Assume ID selector
                             "parent_field": field_name,
-                            "child_field": field["cascades_to"]
+                            "child_field": field["cascades_to"],
                         }
 
             # Save context files
             if dropdowns or cascades or field_mappings:
                 pm.save_context(
-                    state, district, portal_name,
+                    state,
+                    district,
+                    portal_name,
                     dropdowns=dropdowns if dropdowns else None,
                     cascades=cascades if cascades else None,
-                    field_mappings=field_mappings if field_mappings else None
+                    field_mappings=field_mappings if field_mappings else None,
                 )
 
             # Save metadata with cost info
             pm.save_metadata(
-                state, district, portal_name,
+                state,
+                district,
+                portal_name,
                 url=form_structure.get("form_url", ""),
                 training_cost=self.cost_tracker.total_cost,
                 api_calls=self.cost_tracker.calls,
                 input_tokens=self.cost_tracker.total_input_tokens,
-                output_tokens=self.cost_tracker.total_output_tokens
+                output_tokens=self.cost_tracker.total_output_tokens,
             )
 
-            print(f"   Saved to unified structure: portals/{state}/{district}/{portal_name}/")
+            print(
+                f"   Saved to unified structure: portals/{state}/{district}/{portal_name}/"
+            )
 
         except ImportError:
             print("   PortalManager not available, using legacy structure only")
@@ -862,19 +963,23 @@ Generate ONLY the Python code."""
             print(f"   Warning: Could not save to unified structure: {e}")
 
         # Also save metadata to old location
-        with open(portal_dir / "metadata.json", 'w') as f:
-            json.dump({
-                "portal_name": portal_name,
-                "state": state,
-                "district": district,
-                "generated_at": datetime.now().isoformat(),
-                "cost": {
-                    "total": self.cost_tracker.total_cost,
-                    "calls": self.cost_tracker.calls,
-                    "input_tokens": self.cost_tracker.total_input_tokens,
-                    "output_tokens": self.cost_tracker.total_output_tokens
-                }
-            }, f, indent=2)
+        with open(portal_dir / "metadata.json", "w") as f:
+            json.dump(
+                {
+                    "portal_name": portal_name,
+                    "state": state,
+                    "district": district,
+                    "generated_at": datetime.now().isoformat(),
+                    "cost": {
+                        "total": self.cost_tracker.total_cost,
+                        "calls": self.cost_tracker.calls,
+                        "input_tokens": self.cost_tracker.total_input_tokens,
+                        "output_tokens": self.cost_tracker.total_output_tokens,
+                    },
+                },
+                f,
+                indent=2,
+            )
 
         return scraper_path
 
@@ -884,7 +989,7 @@ Generate ONLY the Python code."""
         portal_name: str,
         headless: bool = True,
         state: str = "unknown",
-        district: str = "unknown"
+        district: str = "unknown",
     ) -> Path:
         """
         Full pipeline: discover + generate + save
@@ -910,7 +1015,9 @@ Generate ONLY the Python code."""
         code = self.generate_scraper(form_structure, portal_name)
 
         # Save with state/district context
-        scraper_path = self.save(code, form_structure, portal_name, state=state, district=district)
+        scraper_path = self.save(
+            code, form_structure, portal_name, state=state, district=district
+        )
 
         print(f"\n{'='*60}")
         print("COMPLETE!")
@@ -929,9 +1036,7 @@ async def main():
     url = "https://mcd.everythingcivic.com/citizen/createissue?app_id=U2FsdGVkX180J3mGnJmT5QpgtPjhfjtzyXAAccBUxGU%3D&api_key=e34ba86d3943bd6db9120313da011937189e6a9625170905750f649395bcd68312cf10d264c9305d57c23688cc2e5120"
 
     scraper_path = await discovery.run(
-        url=url,
-        portal_name="mcd_delhi_hybrid",
-        headless=True
+        url=url, portal_name="mcd_delhi_hybrid", headless=True
     )
 
     print(f"\nGenerated: {scraper_path}")

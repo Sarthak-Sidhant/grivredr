@@ -2,6 +2,7 @@
 AI Client - Unified interface using Anthropic SDK with MegaLLM
 Supports both Anthropic native and LangChain integration
 """
+
 import os
 from anthropic import Anthropic
 from dotenv import load_dotenv
@@ -36,10 +37,7 @@ class AIClient:
             )
 
         # Initialize Anthropic client with MegaLLM
-        self.client = Anthropic(
-            base_url="https://ai.megallm.io",
-            api_key=api_key
-        )
+        self.client = Anthropic(base_url="https://ai.megallm.io", api_key=api_key)
 
         # Model selection based on task complexity
         # MegaLLM only has claude-sonnet-4.5 available currently
@@ -61,7 +59,7 @@ class AIClient:
         model: str = "balanced",
         max_tokens: int = 4000,
         temperature: float = 0.1,
-        images: Optional[List[Dict[str, Any]]] = None
+        images: Optional[List[Dict[str, Any]]] = None,
     ) -> str:
         """
         Create a message using Anthropic SDK
@@ -90,20 +88,19 @@ class AIClient:
         # Add images if provided
         if images:
             for img in images:
-                content.append({
-                    "type": "image",
-                    "source": {
-                        "type": "base64",
-                        "media_type": img.get("media_type", "image/png"),
-                        "data": img["data"]
+                content.append(
+                    {
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": img.get("media_type", "image/png"),
+                            "data": img["data"],
+                        },
                     }
-                })
+                )
 
         # Add text prompt
-        content.append({
-            "type": "text",
-            "text": prompt
-        })
+        content.append({"type": "text", "text": prompt})
 
         # Create message with Anthropic SDK
         try:
@@ -111,10 +108,7 @@ class AIClient:
                 model=self.models[model],
                 max_tokens=max_tokens,
                 temperature=temperature,
-                messages=[{
-                    "role": "user",
-                    "content": content
-                }]
+                messages=[{"role": "user", "content": content}],
             )
 
             # Extract text from response
@@ -126,7 +120,7 @@ class AIClient:
                     prompt=prompt,
                     model=self.models[model],
                     response=response_text,
-                    ttl_hours=24
+                    ttl_hours=24,
                 )
 
             return response_text
@@ -136,10 +130,7 @@ class AIClient:
             raise
 
     def analyze_website_structure(
-        self,
-        screenshot_base64: str,
-        url: str,
-        html_snippet: Optional[str] = None
+        self, screenshot_base64: str, url: str, html_snippet: Optional[str] = None
     ) -> str:
         """
         Analyze website structure using Claude Vision
@@ -182,24 +173,18 @@ Provide response in this JSON format:
 {f"HTML Context: {html_snippet}" if html_snippet else ""}
 """
 
-        images = [{
-            "media_type": "image/png",
-            "data": screenshot_base64
-        }]
+        images = [{"media_type": "image/png", "data": screenshot_base64}]
 
         return self._create_message(
             prompt=prompt,
             model="balanced",
             max_tokens=4000,
             temperature=0.1,
-            images=images
+            images=images,
         )
 
     def generate_scraper_code(
-        self,
-        website_analysis: str,
-        url: str,
-        municipality_name: str
+        self, website_analysis: str, url: str, municipality_name: str
     ) -> str:
         """
         Generate reusable Python scraper code
@@ -269,17 +254,14 @@ Return ONLY the Python code, no explanations. Make it production-ready with DEFE
 """
 
         return self._create_message(
-            prompt=prompt,
-            model="powerful",
-            max_tokens=8000,
-            temperature=0.2
+            prompt=prompt, model="powerful", max_tokens=8000, temperature=0.2
         )
 
     def improve_scraper_with_feedback(
         self,
         original_code: str,
         error_log: str,
-        screenshot_base64: Optional[str] = None
+        screenshot_base64: Optional[str] = None,
     ) -> str:
         """
         Fix scraper based on execution errors
@@ -307,24 +289,18 @@ Return the complete fixed code. Identify the issue and resolve it.
 
         images = None
         if screenshot_base64:
-            images = [{
-                "media_type": "image/png",
-                "data": screenshot_base64
-            }]
+            images = [{"media_type": "image/png", "data": screenshot_base64}]
 
         return self._create_message(
             prompt=prompt,
             model="balanced",
             max_tokens=8000,
             temperature=0.2,
-            images=images
+            images=images,
         )
 
     def extract_status_from_page(
-        self,
-        screenshot_base64: str,
-        html_text: str,
-        tracking_id: str
+        self, screenshot_base64: str, html_text: str, tracking_id: str
     ) -> str:
         """
         Extract grievance status from status check page
@@ -351,17 +327,10 @@ Return JSON:
 }}
 """
 
-        images = [{
-            "media_type": "image/png",
-            "data": screenshot_base64
-        }]
+        images = [{"media_type": "image/png", "data": screenshot_base64}]
 
         return self._create_message(
-            prompt=prompt,
-            model="fast",
-            max_tokens=500,
-            temperature=0.1,
-            images=images
+            prompt=prompt, model="fast", max_tokens=500, temperature=0.1, images=images
         )
 
     def get_langchain_chat_model(self, model_tier: str = "balanced"):
@@ -382,7 +351,7 @@ Return JSON:
                 anthropic_api_key=os.getenv("api_key"),
                 anthropic_api_url="https://ai.megallm.io",
                 max_tokens=4000,
-                temperature=0.1
+                temperature=0.1,
             )
         except ImportError:
             logger.warning("langchain-anthropic not installed")
@@ -401,11 +370,7 @@ Return JSON:
         stats = self.cache.get_stats()
         savings = self.cache.estimate_cost_savings(avg_cost_per_call=0.05)
 
-        return {
-            "cache_enabled": True,
-            **stats,
-            "cost_savings": savings
-        }
+        return {"cache_enabled": True, **stats, "cost_savings": savings}
 
     def clear_cache(self):
         """Clear AI cache"""

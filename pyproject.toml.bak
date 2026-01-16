@@ -72,3 +72,15 @@ dev-dependencies = [
     "black>=24.1.1",
     "flake8>=7.0.0",
 ]
+
+[tool.pytest.ini_options]
+markers = [
+    "integration: Integration tests that test multiple components together",
+    "e2e: End-to-end tests that test the complete system",
+    "slow: Slow-running tests",
+]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+asyncio_mode = "auto"

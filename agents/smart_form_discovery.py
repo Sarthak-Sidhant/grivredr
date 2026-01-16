@@ -20,6 +20,7 @@ load_dotenv()
 
 class CostTracker:
     """Track API costs"""
+
     # Pricing per 1M tokens (as of Dec 2024)
     PRICING = {
         "claude-sonnet-4-5-20250929": {"input": 3.0, "output": 15.0},
@@ -36,15 +37,18 @@ class CostTracker:
 
     def add_call(self, model: str, input_tokens: int, output_tokens: int):
         pricing = self.PRICING.get(model, {"input": 3.0, "output": 15.0})
-        cost = (input_tokens * pricing["input"] / 1_000_000) + \
-               (output_tokens * pricing["output"] / 1_000_000)
+        cost = (input_tokens * pricing["input"] / 1_000_000) + (
+            output_tokens * pricing["output"] / 1_000_000
+        )
 
-        self.calls.append({
-            "model": model,
-            "input_tokens": input_tokens,
-            "output_tokens": output_tokens,
-            "cost": cost
-        })
+        self.calls.append(
+            {
+                "model": model,
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+                "cost": cost,
+            }
+        )
         self.total_input_tokens += input_tokens
         self.total_output_tokens += output_tokens
         self.total_cost += cost
@@ -57,7 +61,7 @@ class CostTracker:
             "total_input_tokens": self.total_input_tokens,
             "total_output_tokens": self.total_output_tokens,
             "total_cost": self.total_cost,
-            "calls": self.calls
+            "calls": self.calls,
         }
 
 
@@ -73,8 +77,7 @@ class SmartFormDiscovery:
         self.api_key = os.getenv("api_key")
         self.cost_tracker = CostTracker()
         self.anthropic_client = anthropic.Anthropic(
-            api_key=self.api_key,
-            base_url="https://ai.megallm.io"
+            api_key=self.api_key, base_url="https://ai.megallm.io"
         )
 
     async def discover_form(self, url: str, headless: bool = True) -> dict:
@@ -90,7 +93,7 @@ class SmartFormDiscovery:
             "total_fields": 0,
             "sections": [],
             "submit_button": None,
-            "notes": []
+            "notes": [],
         }
 
         async with async_playwright() as p:
@@ -243,10 +246,7 @@ class SmartFormDiscovery:
         """Organize fields into sections (simple grouping for now)"""
         # For now, just put all in one section
         # Could be enhanced to detect fieldsets, divs with headers, etc.
-        return [{
-            "name": "Form Fields",
-            "fields": fields
-        }]
+        return [{"name": "Form Fields", "fields": fields}]
 
     async def _find_submit_button(self, page: Page) -> dict:
         """Find the submit button"""
@@ -280,7 +280,10 @@ class SmartFormDiscovery:
 
         for section in form_structure["sections"]:
             for field in section["fields"]:
-                if field["field_type"] in ["select", "searchable_select"] and not field["options"]:
+                if (
+                    field["field_type"] in ["select", "searchable_select"]
+                    and not field["options"]
+                ):
                     try:
                         options = await self._get_dropdown_options(page, field)
                         field["options"] = options
@@ -355,14 +358,14 @@ Generate ONLY Python code, no explanations."""
         response = self.anthropic_client.messages.create(
             model="claude-sonnet-4-5-20250929",
             max_tokens=8000,
-            messages=[{"role": "user", "content": prompt}]
+            messages=[{"role": "user", "content": prompt}],
         )
 
         # Track cost
         self.cost_tracker.add_call(
             "claude-sonnet-4-5-20250929",
             response.usage.input_tokens,
-            response.usage.output_tokens
+            response.usage.output_tokens,
         )
 
         code = response.content[0].text
@@ -383,12 +386,12 @@ Generate ONLY Python code, no explanations."""
 
         # Save scraper
         scraper_path = portal_dir / f"{portal_name}_scraper.py"
-        with open(scraper_path, 'w') as f:
+        with open(scraper_path, "w") as f:
             f.write(code)
 
         # Save structure
         structure_path = portal_dir / f"{portal_name}_structure.json"
-        with open(structure_path, 'w') as f:
+        with open(structure_path, "w") as f:
             json.dump(form_structure, f, indent=2)
 
         # Save metadata with costs
@@ -397,15 +400,17 @@ Generate ONLY Python code, no explanations."""
             "generated_at": datetime.now().isoformat(),
             "form_url": form_structure.get("form_url"),
             "total_fields": form_structure.get("total_fields"),
-            "costs": self.cost_tracker.summary()
+            "costs": self.cost_tracker.summary(),
         }
         metadata_path = portal_dir / "metadata.json"
-        with open(metadata_path, 'w') as f:
+        with open(metadata_path, "w") as f:
             json.dump(metadata, f, indent=2)
 
         return scraper_path
 
-    async def generate_from_url(self, url: str, portal_name: str, headless: bool = True) -> Path:
+    async def generate_from_url(
+        self, url: str, portal_name: str, headless: bool = True
+    ) -> Path:
         """Complete pipeline: discover form and generate scraper"""
 
         print(f"\n{'='*60}")
@@ -433,7 +438,9 @@ Generate ONLY Python code, no explanations."""
         print(f"{'='*60}")
         print(f"Scraper: {scraper_path}")
         print(f"Total API Cost: ${costs['total_cost']:.4f}")
-        print(f"Tokens: {costs['total_input_tokens']} input, {costs['total_output_tokens']} output")
+        print(
+            f"Tokens: {costs['total_input_tokens']} input, {costs['total_output_tokens']} output"
+        )
 
         return scraper_path
 
@@ -445,9 +452,7 @@ async def main():
     url = "https://mcd.everythingcivic.com/citizen/createissue?app_id=U2FsdGVkX180J3mGnJmT5QpgtPjhfjtzyXAAccBUxGU%3D&api_key=e34ba86d3943bd6db9120313da011937189e6a9625170905750f649395bcd68312cf10d264c9305d57c23688cc2e5120"
 
     scraper_path = await discovery.generate_from_url(
-        url=url,
-        portal_name="mcd_delhi",
-        headless=True
+        url=url, portal_name="mcd_delhi", headless=True
     )
 
     print(f"\nGenerated: {scraper_path}")

@@ -1,6 +1,7 @@
 """
 Unit tests for ScraperValidator
 """
+
 import pytest
 import asyncio
 from pathlib import Path
@@ -33,7 +34,7 @@ class TestScraperValidator:
             scraper_id="test_scraper",
             execution_status="passed",
             execution_errors=[],
-            execution_time=5.2
+            execution_time=5.2,
         )
 
         result_dict = result.to_dict()
@@ -50,14 +51,16 @@ class TestScraperValidator:
 
         # Create temp file with valid code
         temp_path = Path("/tmp/test_valid_scraper.py")
-        temp_path.write_text("""
+        temp_path.write_text(
+            """
 class TestScraper:
     def __init__(self):
         self.name = "test"
 
     async def submit_grievance(self, data):
         return {"success": True}
-""")
+"""
+        )
 
         try:
             is_valid, error = validator.validate_syntax(temp_path)
@@ -72,11 +75,13 @@ class TestScraper:
 
         # Create temp file with invalid code
         temp_path = Path("/tmp/test_invalid_scraper.py")
-        temp_path.write_text("""
+        temp_path.write_text(
+            """
 class TestScraper
     def __init__(self):  # Missing colon above
         self.name = "test"
-""")
+"""
+        )
 
         try:
             is_valid, error = validator.validate_syntax(temp_path)
@@ -104,14 +109,13 @@ class TestScraper
 
         mock_module.TestScraper = TestScraper
         mock_module.OtherClass = OtherClass
-        mock_module.__dict__ = {
-            'TestScraper': TestScraper,
-            'OtherClass': OtherClass
-        }
+        mock_module.__dict__ = {"TestScraper": TestScraper, "OtherClass": OtherClass}
 
         # Mock dir() to return class names
-        with patch('builtins.dir', return_value=['TestScraper', 'OtherClass']):
-            with patch('builtins.getattr', side_effect=lambda m, name: getattr(m, name)):
+        with patch("builtins.dir", return_value=["TestScraper", "OtherClass"]):
+            with patch(
+                "builtins.getattr", side_effect=lambda m, name: getattr(m, name)
+            ):
                 scraper_class = validator._find_scraper_class(mock_module)
 
                 assert scraper_class is TestScraper
@@ -123,29 +127,19 @@ class TestScraper
         execution_result = {
             "success": True,
             "tracking_id": "ABC123",
-            "message": "Submitted successfully"
+            "message": "Submitted successfully",
         }
 
         expected_schema = {
             "required_fields": ["success", "tracking_id", "message"],
-            "field_types": {
-                "success": "bool",
-                "tracking_id": "str",
-                "message": "str"
-            }
+            "field_types": {"success": "bool", "tracking_id": "str", "message": "str"},
         }
 
         result = ValidationResult(
-            success=False,
-            scraper_id="test",
-            execution_status="pending"
+            success=False, scraper_id="test", execution_status="pending"
         )
 
-        is_valid = validator._validate_schema(
-            execution_result,
-            expected_schema,
-            result
-        )
+        is_valid = validator._validate_schema(execution_result, expected_schema, result)
 
         assert is_valid is True
         assert len(result.schema_errors) == 0
@@ -156,25 +150,17 @@ class TestScraper
 
         execution_result = {
             "success": True,
-            "message": "Submitted"
+            "message": "Submitted",
             # Missing tracking_id
         }
 
-        expected_schema = {
-            "required_fields": ["success", "tracking_id", "message"]
-        }
+        expected_schema = {"required_fields": ["success", "tracking_id", "message"]}
 
         result = ValidationResult(
-            success=False,
-            scraper_id="test",
-            execution_status="pending"
+            success=False, scraper_id="test", execution_status="pending"
         )
 
-        is_valid = validator._validate_schema(
-            execution_result,
-            expected_schema,
-            result
-        )
+        is_valid = validator._validate_schema(execution_result, expected_schema, result)
 
         assert is_valid is False
         assert len(result.schema_errors) > 0
@@ -186,28 +172,19 @@ class TestScraper
 
         execution_result = {
             "success": "true",  # Should be bool, not str
-            "message": "Submitted"
+            "message": "Submitted",
         }
 
         expected_schema = {
             "required_fields": ["success", "message"],
-            "field_types": {
-                "success": "bool",
-                "message": "str"
-            }
+            "field_types": {"success": "bool", "message": "str"},
         }
 
         result = ValidationResult(
-            success=False,
-            scraper_id="test",
-            execution_status="pending"
+            success=False, scraper_id="test", execution_status="pending"
         )
 
-        is_valid = validator._validate_schema(
-            execution_result,
-            expected_schema,
-            result
-        )
+        is_valid = validator._validate_schema(execution_result, expected_schema, result)
 
         assert is_valid is False
         assert len(result.schema_errors) > 0

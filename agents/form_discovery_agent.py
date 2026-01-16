@@ -2,6 +2,7 @@
 Form Discovery Agent - Intelligently explores and understands grievance forms
 Uses iterative exploration with Claude Vision and reflection
 """
+
 import asyncio
 import base64
 import json
@@ -12,8 +13,10 @@ from pathlib import Path
 from playwright.async_api import async_playwright, Page, Browser
 
 from agents.base_agent import BaseAgent, cost_tracker
-from config.ai_client import ai_client
+from config.multi_provider_client import ai_client
+from config.settings import TaskType
 from utils.js_runtime_monitor import JSRuntimeMonitor
+from utils.adaptive_discovery import ai_discovery
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -22,6 +25,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class FormField:
     """Represents a single form field"""
+
     name: str
     label: str
     type: str  # text, dropdown, textarea, file, checkbox, radio
@@ -32,12 +36,18 @@ class FormField:
     depends_on: Optional[str] = None  # For cascading dropdowns
     validation_pattern: Optional[str] = None
     error_message: Optional[str] = None
-    dropdown_type: str = "plain_html"  # plain_html, select2, ant_design, bootstrap, material_ui
+    dropdown_type: str = (
+        "plain_html"  # plain_html, select2, ant_design, bootstrap, material_ui
+    )
+    interaction_code: Optional[str] = (
+        None  # AI-generated code for interacting with this field
+    )
 
 
 @dataclass
 class FormSchema:
     """Complete form structure"""
+
     url: str
     municipality: str
     title: str = ""
@@ -60,12 +70,20 @@ class FormDiscoveryAgent(BaseAgent):
     Agent that discovers form structure through iterative exploration
     """
 
-    def __init__(self, headless: bool = False, enable_js_monitoring: bool = True, browser_type: str = "firefox", skip_visual_analysis: bool = False):
+    def __init__(
+        self,
+        headless: bool = False,
+        enable_js_monitoring: bool = True,
+        browser_type: str = "firefox",
+        skip_visual_analysis: bool = False,
+    ):
         super().__init__(name="FormDiscoveryAgent", max_attempts=3)
         self.headless = headless
         self.enable_js_monitoring = enable_js_monitoring
         self.browser_type = browser_type  # "chromium", "firefox", or "webkit"
-        self.skip_visual_analysis = skip_visual_analysis  # Skip AI vision analysis (faster, cheaper)
+        self.skip_visual_analysis = (
+            skip_visual_analysis  # Skip AI vision analysis (faster, cheaper)
+        )
         self.browser: Optional[Browser] = None
         self.playwright = None
         self.screenshots_dir = Path("outputs/screenshots")
@@ -93,7 +111,7 @@ class FormDiscoveryAgent(BaseAgent):
                 # Create a basic schema from DOM exploration instead
                 visual_analysis = {
                     "success": True,
-                    "initial_schema": FormSchema(url=url, municipality=municipality)
+                    "initial_schema": FormSchema(url=url, municipality=municipality),
                 }
             else:
                 visual_analysis = await self._visual_analysis_phase(url, municipality)
@@ -111,6 +129,12 @@ class FormDiscoveryAgent(BaseAgent):
                 interactive_analysis["js_analysis"] = js_analysis
                 logger.info(f"📊 JS Analysis: {self.js_monitor.get_summary()}")
 
+            # Phase 2.6: Generate Interaction Strategy (The "AI-Field Engineer")
+            logger.info("🧠 Generating dynamic interaction strategies for fields...")
+            await self._generate_interaction_strategies(
+                url, interactive_analysis["schema"]
+            )
+
             # Phase 3: Validation discovery
             validation_analysis = await self._validation_discovery_phase(
                 url, interactive_analysis["schema"]
@@ -121,32 +145,204 @@ class FormDiscoveryAgent(BaseAgent):
                 url, municipality, validation_analysis
             )
 
-            # Confidence check
-            if final_schema.confidence_score < 0.6:
+            # Lower threshold (0.4) to be more accepting - human recording fallback handles edge cases
+            if final_schema.confidence_score < 0.4:
                 return {
                     "success": False,
                     "message": f"Low confidence: {final_schema.confidence_score}",
                     "schema": final_schema.to_dict(),
-                    "reason": "Need human verification"
+                    "reason": "Need human verification",
                 }
 
             return {
                 "success": True,
                 "message": f"Discovered {len(final_schema.fields)} fields",
                 "schema": final_schema.to_dict(),
-                "confidence": final_schema.confidence_score
+                "confidence": final_schema.confidence_score,
             }
 
         except Exception as e:
             logger.error(f"❌ [{self.name}] Discovery failed: {e}")
-            return {
-                "success": False,
-                "error": str(e),
-                "message": "Discovery exception"
-            }
+            return {"success": False, "error": str(e), "message": "Discovery exception"}
 
         finally:
             await self._cleanup_browser()
+
+    async def _generate_interaction_strategies(self, url: str, schema: FormSchema):
+        """
+        Phase 2.6: Generate Interaction Strategies
+        Iterates through fields, identifies complex ones, and asks AI to write custom interaction code.
+        """
+        complex_fields = [
+            f
+            for f in schema.fields
+            if f.type in ["dropdown", "checkbox", "radio", "file"]
+            or "select" in f.selector.lower()
+        ]
+
+        if not complex_fields:
+            logger.info("ℹ️ No complex fields requiring custom interaction strategies.")
+            return
+
+        # Group by similarity to reduce API calls
+        # We'll use the class list + tag name as a signature
+        signatures = {}
+        for field in complex_fields:
+            # We need to get the element signature from the page
+            try:
+                if not self.browser:
+                    await self._init_browser()
+                
+                # Use a fresh context/page if needed, or reuse current state if safe?
+                # Ideally we reuse, but let's assume we need to navigate or use existing page.
+                # Since we are in the middle of discovery, we might not have an active page reference here easily accessible 
+                # strictly from the method signature without passing `page`.
+                # BUT: The patterns usually are consistent. We can use the selector.
+                
+                # For now, let's just group by their type and potential class (if we had it).
+                # Since we don't have the HTML element right here, we might need to take a quick peek or just process individually.
+                # Let's process individually for maximum accuracy, but cache results based on selector patterns?
+                # Actually, let's open the page once to inspect all fields.
+                pass
+            except Exception:
+                pass
+
+        logger.info(f"🧩 Generating code for {len(complex_fields)} complex fields...")
+
+        # We need a page to inspect the DOM for these fields
+        context = await self.browser.new_context()
+        page = await context.new_page()
+        try:
+            await page.goto(url, wait_until="networkidle", timeout=30000)
+            
+            # Cache of generated code by "computed signature" to save tokens/time
+            interaction_cache = {} 
+
+            for field in complex_fields:
+                try:
+                    # 1. Inspect the element to get context for the AI
+                    element_context = await page.evaluate(f"""
+                        () => {{
+                            const el = document.querySelector('{field.selector}');
+                            if (!el) return null;
+                            return {{
+                                outerHTML: el.outerHTML,
+                                parentHTML: el.parentElement ? el.parentElement.outerHTML : '',
+                                tagName: el.tagName,
+                                className: el.className,
+                                computedStyle: window.getComputedStyle(el).display
+                            }};
+                        }}
+                    """)
+
+                    if not element_context:
+                        logger.warning(f"⚠️ Could not find element {field.selector} for analysis")
+                        continue
+
+                    # create a simple signature for caching
+                    # e.g. "SELECT.form-control" or "DIV.ant-select"
+                    signature = f"{element_context['tagName']}.{element_context.get('className', '')}"
+                    
+                    if signature in interaction_cache:
+                        logger.info(f"♻️ Reusing interaction strategy for {field.label} (Signature: {signature})")
+                        field.interaction_code = interaction_cache[signature]
+                        continue
+
+                    # 2. Ask Claude to write the code
+                    logger.info(f"🤖 Writing custom driver for {field.label} ({signature})...")
+                    code = await self._ask_claude_for_interaction_code(
+                        field, element_context, url
+                    )
+                    
+                    if code:
+                        field.interaction_code = code
+                        interaction_cache[signature] = code
+                        logger.info(f"   ✅ Code generated")
+                    
+                except Exception as e:
+                    logger.error(f"Failed to generate strategy for {field.label}: {e}")
+
+        except Exception as e:
+            logger.error(f"Interaction strategy generation failed: {e}")
+        finally:
+            await context.close()
+
+    async def _ask_claude_for_interaction_code(
+        self, field: FormField, context: Dict[str, Any], url: str
+    ) -> str:
+        """
+        Ask Claude to write a Python Playwright async function to interact with this specific element.
+        """
+        prompt = f"""You are a Playwright Automation Expert.
+I need you to write a custom Python `async` function to interact with a specific form field on this website: {url}
+
+Field Details:
+- Label: "{field.label}"
+- Type: {field.type}
+- Selector: `{field.selector}`
+
+DOM Context:
+Outer HTML:
+```html
+{context.get('outerHTML', '')[:1000]}
+```
+
+Parent HTML (wrapping container):
+```html
+{context.get('parentHTML', '')[:1000]}
+```
+
+Task:
+Write a robust, self-contained async python code block to set the value of this field.
+The code will be executed inside a function where `page` (playwright Page) and `value` (the value to set) are available.
+
+Requirements:
+1. Handle the specific UI framework logic (e.g., if it's Ant Design, click the div, then click the option).
+2. If it's a standard Select/Input, use standard Playwright methods.
+3. If it looks like Select2 (hidden select + div container), generally you need to use jQuery or click the container.
+4. **return True** if successful, **return False** if failed.
+5. Do NOT define a function header (def ...). Just write the body of the code. 
+6. Assume `page` and `value` variables exist. `value` is a string.
+
+Example Output (for a custom dropdown):
+```python
+# Click the custom dropdown
+await page.click("{field.selector}")
+await page.wait_for_selector(".dropdown-menu")
+# Find option with text matching value
+await page.click(f".dropdown-item:text-is('{{value}}')")
+return True
+```
+
+Return ONLY the python code block.
+"""
+
+        response = ai_client.client.messages.create(
+            model=ai_client.models["powerful"], # Use Opus or Sonnet 3.5 for coding
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.0,
+            max_tokens=1000,
+        )
+
+        cost_tracker.track_call(
+            model=ai_client.models["powerful"],
+            input_tokens=response.usage.input_tokens,
+            output_tokens=response.usage.output_tokens,
+            agent_name=self.name
+        )
+
+        # Extract code
+        content = response.content[0].text
+        import re
+        match = re.search(r"```python\s*(.*?)\s*```", content, re.DOTALL)
+        if match:
+            return match.group(1).strip()
+        
+        match_generic = re.search(r"```\s*(.*?)\s*```", content, re.DOTALL)
+        if match_generic:
+            return match_generic.group(1).strip()
+            
+        return content.strip()
 
     async def _init_browser(self):
         """Initialize Playwright browser"""
@@ -159,12 +355,10 @@ class FormDiscoveryAgent(BaseAgent):
                 browser_launcher = self.playwright.webkit
             else:
                 browser_launcher = self.playwright.chromium
-            
+
             self.browser = await browser_launcher.launch(
                 headless=self.headless,
-                args=[
-                    '--no-sandbox'
-                ] if self.browser_type == "chromium" else []
+                args=["--no-sandbox"] if self.browser_type == "chromium" else [],
             )
 
     async def _cleanup_browser(self):
@@ -183,11 +377,12 @@ class FormDiscoveryAgent(BaseAgent):
     async def _detect_dropdown_type(self, page: Page, selector: str) -> str:
         """
         Detect the type of dropdown (Select2, Ant Design, Bootstrap, etc.)
-        
+
         Returns: 'select2', 'ant_design', 'bootstrap', 'material_ui', or 'plain_html'
         """
         try:
-            dropdown_type = await page.evaluate("""
+            dropdown_type = await page.evaluate(
+                """
                 (selector) => {
                     const el = document.querySelector(selector);
                     if (!el) return 'plain_html';
@@ -232,64 +427,76 @@ class FormDiscoveryAgent(BaseAgent):
                     
                     return 'plain_html';
                 }
-            """, selector)
+            """,
+                selector,
+            )
             return dropdown_type
         except Exception as e:
             logger.debug(f"Dropdown type detection failed for {selector}: {e}")
-            return 'plain_html'
+            return "plain_html"
 
     async def _select_dropdown_value(
-        self, 
-        page: Page, 
-        selector: str, 
-        value: str, 
+        self,
+        page: Page,
+        selector: str,
+        value: str,
         dropdown_type: str = None,
-        wait_after: float = 1.0
+        wait_after: float = 1.0,
     ) -> bool:
         """
         Universal dropdown selection that handles all dropdown types.
-        
+
         Args:
             page: Playwright page
             selector: CSS selector for the dropdown
             value: Value or text to select
             dropdown_type: Optional type override (auto-detected if None)
             wait_after: Seconds to wait after selection (for cascading)
-            
+
         Returns:
             True if selection was successful
         """
         # Auto-detect dropdown type if not provided
         if dropdown_type is None:
             dropdown_type = await self._detect_dropdown_type(page, selector)
-        
+
         logger.debug(f"Selecting '{value}' in {dropdown_type} dropdown: {selector}")
-        
+
         try:
-            if dropdown_type == 'select2':
-                return await self._select_select2_value(page, selector, value, wait_after)
-            elif dropdown_type == 'ant_design':
-                return await self._select_ant_design_value(page, selector, value, wait_after)
-            elif dropdown_type == 'material_ui':
-                return await self._select_material_ui_value(page, selector, value, wait_after)
-            elif dropdown_type == 'bootstrap':
-                return await self._select_bootstrap_value(page, selector, value, wait_after)
+            if dropdown_type == "select2":
+                return await self._select_select2_value(
+                    page, selector, value, wait_after
+                )
+            elif dropdown_type == "ant_design":
+                return await self._select_ant_design_value(
+                    page, selector, value, wait_after
+                )
+            elif dropdown_type == "material_ui":
+                return await self._select_material_ui_value(
+                    page, selector, value, wait_after
+                )
+            elif dropdown_type == "bootstrap":
+                return await self._select_bootstrap_value(
+                    page, selector, value, wait_after
+                )
             else:
-                return await self._select_plain_html_value(page, selector, value, wait_after)
+                return await self._select_plain_html_value(
+                    page, selector, value, wait_after
+                )
         except Exception as e:
-            logger.warning(f"Primary selection failed for {selector}, trying fallback: {e}")
+            logger.warning(
+                f"Primary selection failed for {selector}, trying fallback: {e}"
+            )
             # Fallback: try plain HTML as last resort
             try:
-                return await self._select_plain_html_value(page, selector, value, wait_after)
+                return await self._select_plain_html_value(
+                    page, selector, value, wait_after
+                )
             except:
                 return False
 
     async def _select_select2_value(
-        self, 
-        page: Page, 
-        selector: str, 
-        value: str,
-        wait_after: float = 1.0
+        self, page: Page, selector: str, value: str, wait_after: float = 1.0
     ) -> bool:
         """
         Select value in Select2 dropdown using jQuery.
@@ -297,7 +504,8 @@ class FormDiscoveryAgent(BaseAgent):
         """
         try:
             # Strategy 1: Use jQuery to set value and trigger change
-            result = await page.evaluate("""
+            result = await page.evaluate(
+                """
                 (args) => {
                     const select = document.querySelector(args.selector);
                     if (!select) return { success: false, error: 'Element not found' };
@@ -346,38 +554,48 @@ class FormDiscoveryAgent(BaseAgent):
                         return { success: false, error: e.message };
                     }
                 }
-            """, {"selector": selector, "value": value})
-            
-            if result.get('success'):
+            """,
+                {"selector": selector, "value": value},
+            )
+
+            if result.get("success"):
                 await asyncio.sleep(wait_after)
-                logger.debug(f"Select2 selection successful: {result.get('selectedValue')}")
+                logger.debug(
+                    f"Select2 selection successful: {result.get('selectedValue')}"
+                )
                 return True
-            
+
             # Strategy 2: Click to open, then select visually
             logger.debug("jQuery approach failed, trying click approach...")
-            
+
             # Find and click the Select2 container
             container_selectors = [
                 f"{selector} + .select2-container",
                 f"span.select2-container[data-select2-id*='{selector.strip('#')}']",
-                f"#{selector.strip('#')}_container"
+                f"#{selector.strip('#')}_container",
             ]
-            
+
             for container_sel in container_selectors:
                 try:
                     container = page.locator(container_sel).first
                     if await container.count() > 0:
                         await container.click(timeout=2000)
                         await asyncio.sleep(0.5)
-                        
+
                         # Type to search if searchable
-                        search_input = page.locator(".select2-search__field, .select2-search input").first
+                        search_input = page.locator(
+                            ".select2-search__field, .select2-search input"
+                        ).first
                         if await search_input.count() > 0:
-                            await search_input.fill(value[:10])  # First 10 chars for search
+                            await search_input.fill(
+                                value[:10]
+                            )  # First 10 chars for search
                             await asyncio.sleep(0.5)
-                        
+
                         # Click first matching result
-                        results = page.locator(".select2-results__option:not(.select2-results__option--disabled)")
+                        results = page.locator(
+                            ".select2-results__option:not(.select2-results__option--disabled)"
+                        )
                         if await results.count() > 0:
                             await results.first.click()
                             await asyncio.sleep(wait_after)
@@ -385,36 +603,34 @@ class FormDiscoveryAgent(BaseAgent):
                 except Exception as inner_e:
                     logger.debug(f"Container click failed: {inner_e}")
                     continue
-            
+
             # Close dropdown if still open
             await page.keyboard.press("Escape")
             return False
-            
+
         except Exception as e:
             logger.warning(f"Select2 selection failed for {selector}: {e}")
             await page.keyboard.press("Escape")
             return False
 
     async def _select_ant_design_value(
-        self, 
-        page: Page, 
-        selector: str, 
-        value: str,
-        wait_after: float = 1.0
+        self, page: Page, selector: str, value: str, wait_after: float = 1.0
     ) -> bool:
         """Select value in Ant Design dropdown"""
         try:
             element = page.locator(selector).first
-            
+
             # Find the ant-select wrapper and click to open
-            wrapper = element.locator("xpath=ancestor::div[contains(@class,'ant-select')]").first
+            wrapper = element.locator(
+                "xpath=ancestor::div[contains(@class,'ant-select')]"
+            ).first
             if await wrapper.count() == 0:
                 wrapper = page.locator(f".ant-select").filter(has=element).first
-            
+
             if await wrapper.count() > 0:
                 await wrapper.click(force=True)
                 await asyncio.sleep(0.8)
-                
+
                 # Find visible dropdown
                 dropdowns = page.locator(".ant-select-dropdown")
                 for i in range(await dropdowns.count()):
@@ -429,34 +645,30 @@ class FormDiscoveryAgent(BaseAgent):
                                 await opt.click()
                                 await asyncio.sleep(wait_after)
                                 return True
-                        
+
                         # Fallback: first available option
                         if await options.count() > 0:
                             await options.first.click()
                             await asyncio.sleep(wait_after)
                             return True
-            
+
             await page.keyboard.press("Escape")
             return False
-            
+
         except Exception as e:
             logger.warning(f"Ant Design selection failed for {selector}: {e}")
             await page.keyboard.press("Escape")
             return False
 
     async def _select_material_ui_value(
-        self, 
-        page: Page, 
-        selector: str, 
-        value: str,
-        wait_after: float = 1.0
+        self, page: Page, selector: str, value: str, wait_after: float = 1.0
     ) -> bool:
         """Select value in Material UI dropdown"""
         try:
             element = page.locator(selector).first
             await element.click()
             await asyncio.sleep(0.5)
-            
+
             # MUI uses a portal for dropdown, find by role
             options = page.locator("[role='listbox'] [role='option'], .MuiMenu-list li")
             for i in range(await options.count()):
@@ -466,32 +678,29 @@ class FormDiscoveryAgent(BaseAgent):
                     await opt.click()
                     await asyncio.sleep(wait_after)
                     return True
-            
+
             # Fallback: first option
             if await options.count() > 0:
                 await options.first.click()
                 await asyncio.sleep(wait_after)
                 return True
-            
+
             await page.keyboard.press("Escape")
             return False
-            
+
         except Exception as e:
             logger.warning(f"Material UI selection failed for {selector}: {e}")
             await page.keyboard.press("Escape")
             return False
 
     async def _select_bootstrap_value(
-        self, 
-        page: Page, 
-        selector: str, 
-        value: str,
-        wait_after: float = 1.0
+        self, page: Page, selector: str, value: str, wait_after: float = 1.0
     ) -> bool:
         """Select value in Bootstrap Select dropdown"""
         try:
             # Try jQuery approach first for bootstrap-select
-            result = await page.evaluate("""
+            result = await page.evaluate(
+                """
                 (args) => {
                     const select = document.querySelector(args.selector);
                     if (select && typeof $ !== 'undefined' && $.fn.selectpicker) {
@@ -501,25 +710,25 @@ class FormDiscoveryAgent(BaseAgent):
                     }
                     return false;
                 }
-            """, {"selector": selector, "value": value})
-            
+            """,
+                {"selector": selector, "value": value},
+            )
+
             if result:
                 await asyncio.sleep(wait_after)
                 return True
-            
+
             # Fallback to plain HTML
-            return await self._select_plain_html_value(page, selector, value, wait_after)
-            
+            return await self._select_plain_html_value(
+                page, selector, value, wait_after
+            )
+
         except Exception as e:
             logger.warning(f"Bootstrap selection failed for {selector}: {e}")
             return False
 
     async def _select_plain_html_value(
-        self, 
-        page: Page, 
-        selector: str, 
-        value: str,
-        wait_after: float = 1.0
+        self, page: Page, selector: str, value: str, wait_after: float = 1.0
     ) -> bool:
         """Select value in plain HTML select element"""
         try:
@@ -530,7 +739,7 @@ class FormDiscoveryAgent(BaseAgent):
                 return True
             except:
                 pass
-            
+
             # Strategy 2: Try by label (text content)
             try:
                 await page.select_option(selector, label=value, timeout=3000)
@@ -538,9 +747,10 @@ class FormDiscoveryAgent(BaseAgent):
                 return True
             except:
                 pass
-            
+
             # Strategy 3: Find option with partial text match
-            options = await page.evaluate("""
+            options = await page.evaluate(
+                """
                 (selector) => {
                     const select = document.querySelector(selector);
                     if (!select) return [];
@@ -549,31 +759,36 @@ class FormDiscoveryAgent(BaseAgent):
                         text: o.text
                     }));
                 }
-            """, selector)
-            
+            """,
+                selector,
+            )
+
             for opt in options:
-                if opt['text'] and value.lower() in opt['text'].lower():
-                    await page.select_option(selector, value=opt['value'], timeout=3000)
+                if opt["text"] and value.lower() in opt["text"].lower():
+                    await page.select_option(selector, value=opt["value"], timeout=3000)
                     await asyncio.sleep(wait_after)
                     return True
-            
+
             # Strategy 4: Select first non-empty option as fallback
             for opt in options:
-                if opt['value'] and opt['value'] != '' and opt['text'] and 'select' not in opt['text'].lower():
-                    await page.select_option(selector, value=opt['value'], timeout=3000)
+                if (
+                    opt["value"]
+                    and opt["value"] != ""
+                    and opt["text"]
+                    and "select" not in opt["text"].lower()
+                ):
+                    await page.select_option(selector, value=opt["value"], timeout=3000)
                     await asyncio.sleep(wait_after)
                     return True
-            
+
             return False
-            
+
         except Exception as e:
             logger.warning(f"Plain HTML selection failed for {selector}: {e}")
             return False
 
     async def _visual_analysis_phase(
-        self,
-        url: str,
-        municipality: str
+        self, url: str, municipality: str
     ) -> Dict[str, Any]:
         """
         Phase 1: Visual analysis with Claude Vision
@@ -582,7 +797,7 @@ class FormDiscoveryAgent(BaseAgent):
 
         context = await self.browser.new_context(
             viewport={"width": 1920, "height": 1080},
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
         )
         page = await context.new_page()
 
@@ -604,7 +819,9 @@ class FormDiscoveryAgent(BaseAgent):
 
             # NEW: Extract event listeners from form fields
             event_listeners = await self._extract_event_listeners(page)
-            logger.info(f"   🎯 Detected {len(event_listeners)} fields with event listeners")
+            logger.info(
+                f"   🎯 Detected {len(event_listeners)} fields with event listeners"
+            )
 
             # Analyze with Claude Vision
             analysis = await self._ask_claude_vision(
@@ -612,7 +829,7 @@ class FormDiscoveryAgent(BaseAgent):
                 url,
                 html_content[:5000],  # First 5000 chars
                 phase="initial",
-                event_listeners=event_listeners  # Pass event info to Claude
+                event_listeners=event_listeners,  # Pass event info to Claude
             )
 
             self._record_action(
@@ -620,20 +837,18 @@ class FormDiscoveryAgent(BaseAgent):
                 description="Analyzed page with Claude Vision",
                 result=analysis["response"][:200],
                 success=True,
-                cost=analysis["cost"]
+                cost=analysis["cost"],
             )
 
             # Parse response to initial schema
             initial_schema = self._parse_vision_response(
-                analysis["response"],
-                url,
-                municipality
+                analysis["response"], url, municipality
             )
 
             return {
                 "success": True,
                 "initial_schema": initial_schema,
-                "screenshot": str(screenshot_path)
+                "screenshot": str(screenshot_path),
             }
 
         except Exception as e:
@@ -649,7 +864,7 @@ class FormDiscoveryAgent(BaseAgent):
         url: str,
         html_snippet: str,
         phase: str = "initial",
-        event_listeners: Dict[str, Any] = None
+        event_listeners: Dict[str, Any] = None,
     ) -> Dict[str, Any]:
         """
         Ask Claude Vision to analyze the form
@@ -720,29 +935,29 @@ Return detailed JSON:
 """
 
         import time
+
         start = time.time()
 
         response = ai_client.client.messages.create(
             model=ai_client.models["balanced"],  # Sonnet for Vision
-            messages=[{
-                "role": "user",
-                "content": [
-                    {
-                        "type": "image",
-                        "source": {
-                            "type": "base64",
-                            "media_type": "image/png",
-                            "data": screenshot_base64
-                        }
-                    },
-                    {
-                        "type": "text",
-                        "text": prompt
-                    }
-                ]
-            }],
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": "image/png",
+                                "data": screenshot_base64,
+                            },
+                        },
+                        {"type": "text", "text": prompt},
+                    ],
+                }
+            ],
             temperature=0.1,
-            max_tokens=4000
+            max_tokens=4000,
         )
 
         elapsed = time.time() - start
@@ -752,32 +967,25 @@ Return detailed JSON:
             model=ai_client.models["balanced"],
             input_tokens=usage.input_tokens,
             output_tokens=usage.output_tokens,
-            agent_name=self.name
+            agent_name=self.name,
         )
 
-        return {
-            "response": response.content[0].text,
-            "cost": cost,
-            "elapsed": elapsed
-        }
+        return {"response": response.content[0].text, "cost": cost, "elapsed": elapsed}
 
     def _parse_vision_response(
-        self,
-        response: str,
-        url: str,
-        municipality: str
+        self, response: str, url: str, municipality: str
     ) -> FormSchema:
         """Parse Claude's vision response into FormSchema"""
         import re
 
         # Extract JSON from markdown code blocks if present
-        json_match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', response, re.DOTALL)
+        json_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", response, re.DOTALL)
         if json_match:
             try:
                 data = json.loads(json_match.group(1))
             except:
                 # Try to find raw JSON
-                json_match = re.search(r'\{.*\}', response, re.DOTALL)
+                json_match = re.search(r"\{.*\}", response, re.DOTALL)
                 data = json.loads(json_match.group(0)) if json_match else {}
         else:
             data = {}
@@ -791,17 +999,22 @@ Return detailed JSON:
 
         # Parse fields from sections
         for section in data.get("sections", []):
-            schema.sections.append({
-                "name": section.get("section_name", ""),
-                "fields": section.get("fields", [])
-            })
+            schema.sections.append(
+                {
+                    "name": section.get("section_name", ""),
+                    "fields": section.get("fields", []),
+                }
+            )
 
             for field_data in section.get("fields", []):
                 # Ensure we have a specific selector (prefer ID)
                 selector = field_data.get("selector", "")
 
                 # If selector is too generic, skip it for now (will be found later by scroll_and_discover)
-                if selector and not any(generic in selector for generic in ['input[type=', 'select', 'textarea']):
+                if selector and not any(
+                    generic in selector
+                    for generic in ["input[type=", "select", "textarea"]
+                ):
                     field = FormField(
                         name=field_data.get("label", "").lower().replace(" ", "_"),
                         label=field_data.get("label", ""),
@@ -809,7 +1022,7 @@ Return detailed JSON:
                         selector=selector,
                         required=field_data.get("required", False),
                         placeholder=field_data.get("placeholder", ""),
-                        validation_pattern=field_data.get("validation_hint", "")
+                        validation_pattern=field_data.get("validation_hint", ""),
                     )
                     schema.fields.append(field)
 
@@ -821,17 +1034,16 @@ Return detailed JSON:
         return schema
 
     async def _interactive_exploration_phase(
-        self,
-        url: str,
-        schema: FormSchema,
-        hints: Dict[str, Any]
+        self, url: str, schema: FormSchema, hints: Dict[str, Any]
     ) -> Dict[str, Any]:
         """
         Phase 2: Interactive exploration to find dynamic content
         """
         logger.info(f"🎮 [{self.name}] Phase 2: Interactive exploration")
 
-        context = await self.browser.new_context(viewport={"width": 1920, "height": 1080})
+        context = await self.browser.new_context(
+            viewport={"width": 1920, "height": 1080}
+        )
         page = await context.new_page()
 
         try:
@@ -865,10 +1077,7 @@ Return detailed JSON:
 
             schema.confidence_score += 0.2  # Boost confidence
 
-            return {
-                "success": True,
-                "schema": schema
-            }
+            return {"success": True, "schema": schema}
 
         finally:
             await context.close()
@@ -880,60 +1089,94 @@ Return detailed JSON:
                 try:
                     logger.info(f"🔽 Exploring dropdown: {field.label}")
 
-                    # Skip language selectors and login dropdowns
-                    if any(skip in field.selector.lower() for skip in ['language', 'login', 'txtloginid']):
-                        logger.info(f"   Skipping {field.label} (appears to be non-form dropdown)")
+                # Skip language selectors and login dropdowns
+                    if any(
+                        skip in field.selector.lower()
+                        for skip in ["language", "login", "txtloginid"]
+                    ):
+                        logger.info(
+                            f"   Skipping {field.label} (appears to be non-form dropdown)"
+                        )
                         continue
 
                     # CRITICAL: Detect dropdown type and store it
-                    field.dropdown_type = await self._detect_dropdown_type(page, field.selector)
+                    field.dropdown_type = await self._detect_dropdown_type(
+                        page, field.selector
+                    )
                     logger.info(f"   Detected dropdown type: {field.dropdown_type}")
 
                     options = []
 
                     # =========================================================
-                    # ANT DESIGN DROPDOWNS - Must click to open and read options
+                    # AI-POWERED DROPDOWN INTERACTION - Use Claude to generate interaction code
                     # =========================================================
-                    if field.dropdown_type == 'ant_design':
-                        options = await self._explore_ant_design_dropdown(page, field.selector, field.label)
+                    logger.info(f"   🤖 Generating AI interaction code for {field.label} ({field.dropdown_type})")
                     
+                    interaction_code = await self._generate_ai_interaction_code(
+                        page, field, field.selector, field_name=field.label
+                    )
+                    
+                    if interaction_code:
+                        field.interaction_code = interaction_code
+                        logger.info(f"   ✅ AI interaction code generated and stored")
+                        # AI code will be used later by test agent and code generator
+                    else:
+                        logger.warning(f"   ⚠️  AI code generation failed, using fallback methods")
+
                     # =========================================================
                     # SELECT2 DROPDOWNS
                     # =========================================================
-                    elif field.dropdown_type == 'select2':
-                        options = await self._explore_select2_dropdown(page, field.selector, field.label)
-                    
+                    if field.dropdown_type == "select2":
+                        options = await self._explore_select2_dropdown(
+                            page, field.selector, field.label
+                        )
+
                     # =========================================================
                     # PLAIN HTML SELECT - Read directly from DOM
                     # =========================================================
                     else:
-                        options = await page.evaluate(f"""
-                            (selector) => {{
+                        # Read all options - AI will determine which are meaningful
+                        # (No hardcoded placeholder list - AI reads actual form context)
+                        options = await page.evaluate(
+                            """
+                            (selector) => {
                                 const select = document.querySelector(selector);
                                 if (!select || select.tagName !== 'SELECT') return [];
                                 
-                                const opts = Array.from(select.options).map(opt => ({{
+                                const opts = Array.from(select.options).map(opt => ({
                                     text: opt.text.trim(),
                                     value: opt.value
-                                }}));
-                                return opts.filter(o => o.text && o.text !== 'Please Select' && o.text !== 'Select' && o.text !== '--Select--');
-                            }}
-                        """, field.selector)
+                                }));
+                                // Filter empty/whitespace-only, but keep all real text
+                                // AI will determine which are placeholders when needed
+                                return opts.filter(o => o.text && o.text.length > 0);
+                            }
+                            """,
+                            field.selector
+                        )
 
                     if options:
-                        field.options = [opt['text'] for opt in options if opt.get('text')]
-                        logger.info(f"   Found {len(field.options)} options: {field.options[:3]}..." if len(field.options) > 3 else f"   Found {len(field.options)} options: {field.options}")
+                        field.options = [
+                            opt["text"] for opt in options if opt.get("text")
+                        ]
+                        logger.info(
+                            f"   Found {len(field.options)} options: {field.options[:3]}..."
+                            if len(field.options) > 3
+                            else f"   Found {len(field.options)} options: {field.options}"
+                        )
                     else:
                         logger.warning(f"   No options found for {field.label}")
 
                 except Exception as e:
                     logger.warning(f"   Could not explore {field.label}: {e}")
 
-    async def _explore_ant_design_dropdown(self, page: Page, selector: str, field_name: str) -> List[Dict[str, str]]:
+    async def _explore_ant_design_dropdown(
+        self, page: Page, selector: str, field_name: str
+    ) -> List[Dict[str, str]]:
         """
         Explore Ant Design dropdown by clicking to open and reading visible options.
         Ant Design renders options in a portal, so we must click to see them.
-        
+
         CRITICAL: Must use Playwright's native click(), NOT JavaScript click(),
         because React's synthetic event system doesn't respond to JS click().
         """
@@ -945,28 +1188,35 @@ Return detailed JSON:
             if not await element.count():
                 logger.debug(f"{field_name}: Selector {selector} not found")
                 return []
-            
+
             # Get the ant-select wrapper
-            wrapper = page.locator(f"{selector}").locator("xpath=ancestor::div[contains(@class, 'ant-select')]").first
-            
+            wrapper = (
+                page.locator(f"{selector}")
+                .locator("xpath=ancestor::div[contains(@class, 'ant-select')]")
+                .first
+            )
+
             # If we can't find wrapper via xpath, try direct .ant-select parent approach
             if not await wrapper.count():
                 # Try finding by ID pattern
-                if selector.startswith('#'):
+                if selector.startswith("#"):
                     field_id = selector[1:]  # Remove #
                     wrapper = page.locator(f".ant-select:has(input#{field_id})").first
-            
+
             if not await wrapper.count():
-                logger.debug(f"{field_name}: No ant-select wrapper found for {selector}")
+                logger.debug(
+                    f"{field_name}: No ant-select wrapper found for {selector}"
+                )
                 return []
-            
+
             # CRITICAL: Use Playwright's native click, NOT JavaScript click
             # JavaScript click() doesn't trigger React's synthetic events
             await wrapper.click()
             await asyncio.sleep(1.0)  # Wait for dropdown to open and options to render
-            
+
             # Find the visible dropdown and extract options
-            options = await page.evaluate("""
+            options = await page.evaluate(
+                """
                 () => {
                     // Find all visible ant-select-dropdowns
                     const dropdowns = document.querySelectorAll('.ant-select-dropdown');
@@ -998,74 +1248,165 @@ Return detailed JSON:
                     
                     return options;
                 }
-            """)
-            
+            """
+            )
+
             # Close the dropdown
-            await page.keyboard.press('Escape')
+            await page.keyboard.press("Escape")
             await asyncio.sleep(0.3)
-            
+
             if options:
                 logger.debug(f"{field_name}: Found {len(options)} Ant Design options")
-            
+
             return options
-            
+
         except Exception as e:
             logger.debug(f"Ant Design exploration failed for {field_name}: {e}")
             # Make sure to close dropdown if open
             try:
-                await page.keyboard.press('Escape')
+                await page.keyboard.press("Escape")
             except:
                 pass
             return []
+    
+    async def _generate_ai_interaction_code(
+        self, page: Page, field: FormField, selector: str, field_name: str
+    ) -> str:
+        """
+        Use Claude AI to generate Python Playwright code for interacting with this dropdown
+        
+        This replaces hardcoded methods with AI-generated code that works for complex UIs
+        """
+        try:
+            # Take screenshot for AI analysis
+            screenshot_bytes = await page.screenshot()
+            screenshot_b64 = base64.b64encode(screenshot_bytes).decode()
+            
+            # Get HTML structure of the dropdown
+            html_structure = await page.evaluate(f"() => {{ return document.querySelector('{selector}').outerHTML }}")
+            
+            # Build prompt for AI
+            prompt = f"""I need Python Playwright code to interact with this dropdown field. 
 
-    async def _explore_select2_dropdown(self, page: Page, selector: str, field_name: str) -> List[Dict[str, str]]:
+Here's what I know:
+- Dropdown type: {field.dropdown_type}
+- Field name: {field_name}
+- Field label: {field.label}
+- CSS selector: {selector}
+- HTML structure: {html_structure[:500]}...
+
+Task: Generate a Python async function `select_{field_name.lower().replace(' ', '_')}(page, value)` that:
+1. Clicks on the dropdown to open it
+2. Selects an option by text or value
+3. Waits for selection to complete
+4. Returns True if successful, False otherwise
+
+Requirements:
+- Use Playwright async methods (click, fill, wait_for_selector)
+- Include proper error handling
+- Add comments explaining the interaction
+- Handle cases where dropdown is already open
+- Include fallback strategies
+
+Look at the screenshot to understand the visual style and likely interaction pattern.
+
+Generate only the function code (no imports, no class definition)."""
+
+            # Call AI with Vision to generate the interaction code
+            messages = [
+                {
+                    "role": "user", 
+                    "content": [
+                        {
+                            "type": "image", 
+                            "source": {
+                                "type": "base64", 
+                                "media_type": "image/png", 
+                                "data": screenshot_b64
+                            }
+                        },
+                        {"type": "text", "text": prompt}
+                    ]
+                }
+            ]
+
+            response = await self.ai_client.create_message(
+                messages=messages,
+                task_type=TaskType.VISION,
+                system="You are an expert web automation engineer. Generate clean, working Python Playwright code."
+            )
+            
+            # Extract the generated code
+            generated_code = response.get("content", "").strip()
+            
+            # Clean up markdown code blocks if present
+            if generated_code.startswith("```"):
+                generated_code = generated_code.split("```python")[1].split("```")[0].strip()
+            
+            logger.info(f"   ✅ AI generated {len(generated_code)} characters of interaction code")
+            return generated_code
+            
+        except Exception as e:
+            logger.warning(f"AI code generation failed for {field_name}: {e}")
+            return None
+    
+    async def _explore_ant_design_dropdown(
+        self, page: Page, selector: str, field_name: str
+    ) -> List[Dict[str, str]]:
         """
         Explore Select2 dropdown - first try DOM, then click to open
         """
         options = []
-        
+
         try:
-            # Strategy 1: Try to read from hidden select element
-            options = await page.evaluate(f"""
-                (selector) => {{
+            # Read all options - no hardcoded placeholder filtering
+            # (AI will determine which options are meaningful when needed)
+            options = await page.evaluate(
+                """
+                (selector) => {
                     const select = document.querySelector(selector);
                     if (!select) return [];
                     
                     // Check if it's a select element with options
-                    if (select.tagName === 'SELECT' && select.options) {{
-                        const opts = Array.from(select.options).map(opt => ({{
+                    if (select.tagName === 'SELECT' && select.options) {
+                        const opts = Array.from(select.options).map(opt => ({
                             text: opt.text.trim(),
                             value: opt.value
-                        }}));
-                        return opts.filter(o => o.text && o.text !== 'Please Select' && o.text !== 'Select');
-                    }}
+                        }));
+                        return opts.filter(o => o.text && o.text.length > 0);
+                    }
                     
                     // Try to find associated select
                     const id = select.id;
-                    const hiddenSelect = document.querySelector(`select#${{id}}, select[name="${{id}}"]`);
-                    if (hiddenSelect && hiddenSelect.options) {{
-                        const opts = Array.from(hiddenSelect.options).map(opt => ({{
+                    const hiddenSelect = document.querySelector(`select#${id}, select[name="${id}"]`);
+                    if (hiddenSelect && hiddenSelect.options) {
+                        const opts = Array.from(hiddenSelect.options).map(opt => ({
                             text: opt.text.trim(),
                             value: opt.value
-                        }}));
-                        return opts.filter(o => o.text && o.text !== 'Please Select' && o.text !== 'Select');
-                    }}
+                        }));
+                        return opts.filter(o => o.text && o.text.length > 0);
+                    }
                     
                     return [];
-                }}
-            """, selector)
-            
+                }
+                """,
+                selector
+            )
+
             if options:
                 return options
-            
+
             # Strategy 2: Click to open and capture visible options
-            container = page.locator(f"{selector} + .select2-container, .select2-container").first
-            
+            container = page.locator(
+                f"{selector} + .select2-container, .select2-container"
+            ).first
+
             if await container.count() > 0:
                 await container.click(timeout=3000)
                 await asyncio.sleep(0.5)
-                
-                options = await page.evaluate("""
+
+                options = await page.evaluate(
+                    """
                     () => {
                         const results = document.querySelectorAll('.select2-results li, .select2-results__option');
                         return Array.from(results).map(li => ({
@@ -1073,21 +1414,84 @@ Return detailed JSON:
                             value: li.getAttribute('data-value') || li.getAttribute('id') || li.textContent.trim()
                         })).filter(o => o.text && !o.text.includes('Searching') && !o.text.includes('Loading'));
                     }
-                """)
-                
-                await page.keyboard.press('Escape')
+                """
+                )
+
+                await page.keyboard.press("Escape")
                 await asyncio.sleep(0.3)
-            
+
             return options
-            
+
         except Exception as e:
             logger.debug(f"Select2 exploration failed for {field_name}: {e}")
             try:
-                await page.keyboard.press('Escape')
+                await page.keyboard.press("Escape")
             except:
                 pass
             return []
+    
+    async def _generate_ai_interaction_code(
+        self, page: Page, field: FormField, selector: str, field_name: str
+    ) -> str:
+        """
+        Use Claude AI to generate Python Playwright code for interacting with this dropdown
+        
+        This replaces hardcoded methods with AI-generated code that works for complex UIs
+        """
+        try:
+            # Take screenshot of dropdown element
+            screenshot_path = f"./outputs/screenshots/{field_name.replace(' ', '_')}_dropdown.png"
+            await page.screenshot(path=screenshot_path, full_page=False)
+            
+            # Get HTML structure of dropdown
+            html_structure = await page.evaluate(f"() => {{ return document.querySelector('{selector}').outerHTML }}")
+            
+            # Build prompt for Claude
+            prompt = f"""I need Python Playwright code to interact with a dropdown.
 
+Field Details:
+- Dropdown type: {field.dropdown_type}
+- Field name: {field_name}
+- Field label: {field.label}
+- CSS selector: {selector}
+
+Generate a Python async function `select_{field_name.lower().replace(' ', '_')}(page, value)` that:
+1. Clicks on the dropdown to open it
+2. Selects an option by text or value
+3. Waits for selection to complete
+4. Returns True if successful, False otherwise
+
+Requirements:
+- Use Playwright async methods (click, fill, wait_for_selector, wait_for_timeout)
+- Include proper error handling
+- Add comments explaining the interaction
+- Handle cases where dropdown is already open
+
+Generate only the function code, no imports or class definition."""
+
+            # Call AI to generate interaction code
+            response = await ai_client.create_message(
+                messages=[
+                    {"role": "user", "content": prompt}
+                ],
+                task_type=TaskType.FORM_DISCOVERY,
+                system="You are an expert web automation engineer. Generate clean, working Python Playwright code."
+            )
+            
+            # Extract generated code
+            generated_code = response.get("content", "").strip()
+            
+            # Clean up markdown code blocks if present
+            if generated_code.startswith("```"):
+                generated_code = generated_code.split("```python")[1].split("```")[0].strip()
+            
+            logger.info(f"   ✅ AI generated {len(generated_code)} characters of interaction code")
+            return generated_code
+            
+        except Exception as e:
+            logger.warning(f"AI code generation failed for {field_name}: {e}")
+            return None
+    
     async def _scroll_and_discover(self, page: Page, schema: FormSchema):
         """Scroll page to discover lazy-loaded fields - focuses on main complaint form"""
         logger.info(f"📜 Scrolling to discover hidden fields")
@@ -1097,7 +1501,8 @@ Return detailed JSON:
         await asyncio.sleep(1)
 
         # Get all form inputs, but filter out common non-form sections
-        all_inputs = await page.evaluate("""
+        all_inputs = await page.evaluate(
+            """
             () => {
                 // First, try to find the main complaint/grievance form
                 const mainForm = document.querySelector(
@@ -1129,7 +1534,8 @@ Return detailed JSON:
                         visible: input.offsetParent !== null  // Check if actually visible
                     }));
             }
-        """)
+        """
+        )
 
         existing_names = {f.name for f in schema.fields}
 
@@ -1143,9 +1549,13 @@ Return detailed JSON:
                     name=name,
                     label=name.replace("_", " ").title(),
                     type=input_data["type"],
-                    selector=f"#{input_data['id']}" if input_data['id'] else f"[name='{name}']",
+                    selector=(
+                        f"#{input_data['id']}"
+                        if input_data["id"]
+                        else f"[name='{name}']"
+                    ),
                     required=input_data.get("required", False),
-                    placeholder=input_data.get("placeholder", "")
+                    placeholder=input_data.get("placeholder", ""),
                 )
                 schema.fields.append(field)
                 existing_names.add(name)
@@ -1157,14 +1567,17 @@ Return detailed JSON:
         dropdowns = [f for f in schema.fields if f.type == "dropdown"]
 
         for i, parent in enumerate(dropdowns):
-            for child in dropdowns[i+1:]:
+            for child in dropdowns[i + 1 :]:
                 # Test if selecting parent populates child
                 try:
                     if parent.options:
-                        logger.info(f"   Testing: {parent.label} ({parent.dropdown_type}) → {child.label}")
+                        logger.info(
+                            f"   Testing: {parent.label} ({parent.dropdown_type}) → {child.label}"
+                        )
 
                         # Get child option count BEFORE parent selection
-                        child_options_before = await page.evaluate(f"""
+                        child_options_before = await page.evaluate(
+                            f"""
                             () => {{
                                 const select = document.querySelector('{child.selector}');
                                 if (select && select.options) {{
@@ -1172,23 +1585,27 @@ Return detailed JSON:
                                 }}
                                 return [];
                             }}
-                        """)
+                        """
+                        )
 
                         # Use our universal dropdown selector that handles all types!
                         selection_success = await self._select_dropdown_value(
-                            page, 
-                            parent.selector, 
+                            page,
+                            parent.selector,
                             parent.options[0],
                             dropdown_type=parent.dropdown_type,
-                            wait_after=1.5  # Extra wait for cascading to load
+                            wait_after=1.5,  # Extra wait for cascading to load
                         )
 
                         if not selection_success:
-                            logger.debug(f"   Could not select {parent.label}, skipping cascade test")
+                            logger.debug(
+                                f"   Could not select {parent.label}, skipping cascade test"
+                            )
                             continue
 
                         # Check if child got populated AFTER parent selection
-                        child_options_after = await page.evaluate(f"""
+                        child_options_after = await page.evaluate(
+                            f"""
                             () => {{
                                 const select = document.querySelector('{child.selector}');
                                 if (select && select.options) {{
@@ -1196,30 +1613,41 @@ Return detailed JSON:
                                 }}
                                 return [];
                             }}
-                        """)
+                        """
+                        )
 
                         # Check if new options appeared
-                        new_options = len(child_options_after) > len(child_options_before)
-                        different_options = set(child_options_after) != set(child_options_before)
+                        new_options = len(child_options_after) > len(
+                            child_options_before
+                        )
+                        different_options = set(child_options_after) != set(
+                            child_options_before
+                        )
 
                         if new_options or different_options:
-                            logger.info(f"   ✅ Cascading detected! ({len(child_options_before)} → {len(child_options_after)} options)")
+                            logger.info(
+                                f"   ✅ Cascading detected! ({len(child_options_before)} → {len(child_options_after)} options)"
+                            )
                             child.depends_on = parent.name
-                            child.options = [opt for opt in child_options_after if opt and 'select' not in opt.lower()]
+                            child.options = [
+                                opt
+                                for opt in child_options_after
+                                if opt and "select" not in opt.lower()
+                            ]
 
                 except Exception as e:
                     logger.debug(f"   Cascade test failed: {e}")
 
     async def _disambiguate_submit_button_with_claude(
-        self,
-        page: Page,
-        possible_buttons: List[Dict[str, Any]]
+        self, page: Page, possible_buttons: List[Dict[str, Any]]
     ) -> Optional[str]:
         """
         Use Claude to identify the correct submit button from multiple candidates
         Handles cases like abua_sathi where "Register Complaint" appears as both heading and button
         """
-        logger.info(f"🤔 [{self.name}] Multiple submit buttons found, asking Claude to disambiguate...")
+        logger.info(
+            f"🤔 [{self.name}] Multiple submit buttons found, asking Claude to disambiguate..."
+        )
 
         # Take screenshot
         screenshot = await page.screenshot()
@@ -1228,15 +1656,17 @@ Return detailed JSON:
         # Get button details
         buttons_info = []
         for i, btn in enumerate(possible_buttons):
-            buttons_info.append({
-                "index": i,
-                "text": btn.get("text", ""),
-                "type": btn.get("type", ""),
-                "selector": btn.get("selector", ""),
-                "class": btn.get("class", ""),
-                "visible": btn.get("visible", False),
-                "in_viewport": btn.get("in_viewport", False)
-            })
+            buttons_info.append(
+                {
+                    "index": i,
+                    "text": btn.get("text", ""),
+                    "type": btn.get("type", ""),
+                    "selector": btn.get("selector", ""),
+                    "class": btn.get("class", ""),
+                    "visible": btn.get("visible", False),
+                    "in_viewport": btn.get("in_viewport", False),
+                }
+            )
 
         prompt = f"""You are analyzing a form to identify the ACTUAL submit button.
 
@@ -1270,32 +1700,31 @@ Return JSON with:
         try:
             response = ai_client.client.messages.create(
                 model=ai_client.models["balanced"],
-                messages=[{
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "image",
-                            "source": {
-                                "type": "base64",
-                                "media_type": "image/png",
-                                "data": screenshot_base64
-                            }
-                        },
-                        {
-                            "type": "text",
-                            "text": prompt
-                        }
-                    ]
-                }],
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "image",
+                                "source": {
+                                    "type": "base64",
+                                    "media_type": "image/png",
+                                    "data": screenshot_base64,
+                                },
+                            },
+                            {"type": "text", "text": prompt},
+                        ],
+                    }
+                ],
                 temperature=0.1,
-                max_tokens=500
+                max_tokens=500,
             )
 
             cost_tracker.track_call(
                 model=ai_client.models["balanced"],
                 input_tokens=response.usage.input_tokens,
                 output_tokens=response.usage.output_tokens,
-                agent_name=self.name
+                agent_name=self.name,
             )
 
             result_text = response.content[0].text.strip()
@@ -1309,11 +1738,15 @@ Return JSON with:
 
             if result.get("confidence", 0) > 0.6:
                 correct_button = possible_buttons[result["correct_index"]]
-                logger.info(f"   ✅ Claude identified: '{correct_button.get('text')}' (confidence: {result['confidence']:.2f})")
+                logger.info(
+                    f"   ✅ Claude identified: '{correct_button.get('text')}' (confidence: {result['confidence']:.2f})"
+                )
                 logger.info(f"   💡 Reasoning: {result['reasoning']}")
                 return correct_button.get("selector")
             else:
-                logger.warning(f"   ⚠️ Low confidence ({result['confidence']:.2f}), using fallback")
+                logger.warning(
+                    f"   ⚠️ Low confidence ({result['confidence']:.2f}), using fallback"
+                )
                 return None
 
         except Exception as e:
@@ -1326,7 +1759,8 @@ Return JSON with:
         Returns which fields have blur, focus, input, change handlers
         """
         try:
-            event_map = await page.evaluate("""
+            event_map = await page.evaluate(
+                """
                 () => {
                     const elements = document.querySelectorAll('input, select, textarea, button');
                     const eventMap = {};
@@ -1371,7 +1805,8 @@ Return JSON with:
 
                     return eventMap;
                 }
-            """)
+            """
+            )
 
             return event_map
 
@@ -1380,9 +1815,7 @@ Return JSON with:
             return {}
 
     async def _validation_discovery_phase(
-        self,
-        url: str,
-        schema: FormSchema
+        self, url: str, schema: FormSchema
     ) -> Dict[str, Any]:
         """
         Phase 3: Submit empty form to discover required fields
@@ -1397,63 +1830,148 @@ Return JSON with:
 
             # Enhanced submit button detection
             submit_selector = schema.submit_button.get("selector", "")
+            possible_buttons = []  # Initialize before conditional block
             if not submit_selector:
                 # Try to find submit buttons
-                possible_buttons = await page.evaluate("""
+                possible_buttons = await page.evaluate(
+                    """
                     () => {
                         const buttons = [];
+                        // Expanded selectors - covers most common patterns
                         const selectors = [
                             'button[type="submit"]',
                             'input[type="submit"]',
                             'button:not([type="button"])',
                             '.btn-primary',
+                            '.btn-success',
+                            '.btn-submit',
+                            '.submit-btn',
                             'button.submit',
-                            '*[onclick*="submit"]'
+                            'button.btn',
+                            '*[onclick*="submit"]',
+                            '*[onclick*="Submit"]',
+                            'button[name="submit"]',
+                            'input[name="submit"]',
+                            // Government/Indian portal patterns
+                            '#btnSubmit',
+                            '#submit',
+                            '#Submit',
+                            '#btn_submit',
+                            '[value="Submit"]',
+                            '[value="submit"]',
+                            '[value="Register"]',
+                            '[value="Register Complaint"]',
+                            'button:contains("Submit")',
+                            // Bootstrap patterns
+                            '.btn-outline-primary',
+                            '.btn-lg',
+                            // Tailwind patterns
+                            '.bg-blue-500',
+                            '.bg-green-500',
+                            // Generic patterns
+                            'form button:last-of-type',
+                            'form input:last-of-type[type="submit"]'
                         ];
 
                         selectors.forEach(sel => {
-                            document.querySelectorAll(sel).forEach((btn, idx) => {
-                                const rect = btn.getBoundingClientRect();
-                                buttons.push({
-                                    text: btn.textContent?.trim() || btn.value || '',
-                                    type: btn.tagName,
-                                    selector: sel + ':nth-of-type(' + (idx + 1) + ')',
-                                    class: btn.className,
-                                    visible: rect.width > 0 && rect.height > 0,
-                                    in_viewport: rect.top >= 0 && rect.bottom <= window.innerHeight
+                            try {
+                                document.querySelectorAll(sel).forEach((btn, idx) => {
+                                    const rect = btn.getBoundingClientRect();
+                                    const text = (btn.textContent?.trim() || btn.value || '').toLowerCase();
+                                    // Boost if text contains submit-related words
+                                    const isSubmitLike = ['submit', 'register', 'send', 'save', 'continue', 'proceed'].some(w => text.includes(w));
+                                    buttons.push({
+                                        text: btn.textContent?.trim() || btn.value || '',
+                                        type: btn.tagName,
+                                        selector: btn.id ? '#' + btn.id : (btn.name ? `[name="${btn.name}"]` : sel),
+                                        class: btn.className,
+                                        visible: rect.width > 0 && rect.height > 0,
+                                        in_viewport: rect.top >= 0 && rect.bottom <= window.innerHeight,
+                                        is_submit_like: isSubmitLike
+                                    });
                                 });
-                            });
+                            } catch(e) {}
                         });
 
-                        return buttons;
+                        // Sort by is_submit_like and visibility
+                        return buttons.sort((a, b) => {
+                            if (a.is_submit_like && !b.is_submit_like) return -1;
+                            if (!a.is_submit_like && b.is_submit_like) return 1;
+                            if (a.visible && !b.visible) return -1;
+                            return 0;
+                        });
                     }
-                """)
+                """
+                )
 
                 if len(possible_buttons) > 1:
                     # Use Claude to disambiguate
-                    submit_selector = await self._disambiguate_submit_button_with_claude(page, possible_buttons)
+                    submit_selector = (
+                        await self._disambiguate_submit_button_with_claude(
+                            page, possible_buttons
+                        )
+                    )
                 elif len(possible_buttons) == 1:
                     submit_selector = possible_buttons[0].get("selector")
 
                 if submit_selector:
                     schema.submit_button["selector"] = submit_selector
 
-            # Try to submit empty form
-            if submit_selector:
+            # Try to submit empty form with fallback logic
+            if submit_selector or possible_buttons:
                 logger.info(f"🚀 Submitting empty form to discover validation")
 
-                await page.click(submit_selector, timeout=5000)
+                # Build list of selectors to try
+                selectors_to_try = []
+                if submit_selector:
+                    selectors_to_try.append(submit_selector)
+                if possible_buttons:
+                    for btn in possible_buttons[:5]:  # Try first 5 candidates
+                        sel = btn.get("selector")
+                        if sel and sel not in selectors_to_try:
+                            selectors_to_try.append(sel)
+                # Add common fallback selectors
+                fallback_selectors = [
+                    'button[type="submit"]',
+                    'input[type="submit"]',
+                    '.btn-primary',
+                    '.btn-success',
+                    '#btnSubmit',
+                    '#submit',
+                    'form button',
+                    'button.btn'
+                ]
+                for sel in fallback_selectors:
+                    if sel not in selectors_to_try:
+                        selectors_to_try.append(sel)
+
+                # Try each selector until one works
+                clicked = False
+                for sel in selectors_to_try:
+                    try:
+                        await page.click(sel, timeout=2000)
+                        clicked = True
+                        logger.info(f"   ✓ Clicked submit with selector: {sel}")
+                        break
+                    except Exception:
+                        continue
+
+                if not clicked:
+                    logger.warning("   ⚠️ Could not click any submit button")
+
                 await asyncio.sleep(1)
 
                 # Capture any error messages
-                error_messages = await page.evaluate("""
+                error_messages = await page.evaluate(
+                    """
                     () => {
                         const errors = document.querySelectorAll(
                             '.error, .invalid, .text-danger, [class*="error"]'
                         );
                         return Array.from(errors).map(e => e.textContent.trim());
                     }
-                """)
+                """
+                )
 
                 logger.info(f"   Found {len(error_messages)} validation errors")
 
@@ -1470,7 +1988,7 @@ Return JSON with:
                 return {
                     "success": True,
                     "validation_errors": error_messages,
-                    "schema": schema
+                    "schema": schema,
                 }
 
         except Exception as e:
@@ -1482,10 +2000,7 @@ Return JSON with:
         return {"success": True, "schema": schema}
 
     async def _build_final_schema(
-        self,
-        url: str,
-        municipality: str,
-        validation_result: Dict[str, Any]
+        self, url: str, municipality: str, validation_result: Dict[str, Any]
     ) -> FormSchema:
         """
         Phase 4: Build final schema with confidence scoring
@@ -1510,8 +2025,7 @@ Return JSON with:
 
         # Dropdown options populated?
         dropdowns_with_options = sum(
-            1 for f in schema.fields
-            if f.type == "dropdown" and len(f.options) > 0
+            1 for f in schema.fields if f.type == "dropdown" and len(f.options) > 0
         )
         if dropdowns_with_options > 0:
             confidence_factors.append(0.15)
@@ -1533,10 +2047,12 @@ async def test_form_discovery():
     """Test the form discovery agent"""
     agent = FormDiscoveryAgent(headless=False)
 
-    result = await agent.execute({
-        "url": "https://smartranchi.in/Portal/View/ComplaintRegistration.aspx?m=Online",
-        "municipality": "ranchi"
-    })
+    result = await agent.execute(
+        {
+            "url": "https://smartranchi.in/Portal/View/ComplaintRegistration.aspx?m=Online",
+            "municipality": "ranchi",
+        }
+    )
 
     print(json.dumps(result, indent=2, default=str))
 

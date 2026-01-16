@@ -2,27 +2,32 @@
 Browser Use Discovery Agent - Uses AI-powered browser automation for exploration
 Falls back gracefully if browser-use is not available
 """
+
 import asyncio
 import logging
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, TYPE_CHECKING
 from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
 
 # Try to import browser-use, but don't fail if not available
+BROWSER_USE_AVAILABLE = False
 try:
     from browser_use import Agent, Browser, BrowserConfig
     from browser_use.agent.views import ActionResult
+
     BROWSER_USE_AVAILABLE = True
     logger.info("✓ browser-use framework available")
 except ImportError:
-    BROWSER_USE_AVAILABLE = False
+    # Define a placeholder type for type hints
+    ActionResult = Any  # type: ignore
     logger.warning("⚠️  browser-use not installed - using standard Playwright")
 
 
 @dataclass
 class BrowserUseResult:
     """Result from Browser Use exploration"""
+
     success: bool
     actions_taken: list
     form_data: Dict[str, Any]
@@ -58,17 +63,14 @@ class BrowserUseDiscoveryAgent:
                 actions_taken=[],
                 form_data={},
                 screenshots=[],
-                error="browser-use framework not installed"
+                error="browser-use framework not installed",
             )
 
         logger.info(f"🤖 Using Browser Use AI to explore {url}")
 
         try:
             # Configure browser
-            config = BrowserConfig(
-                headless=self.headless,
-                disable_security=True
-            )
+            config = BrowserConfig(headless=self.headless, disable_security=True)
 
             # Create AI agent
             agent = Agent(
@@ -89,7 +91,7 @@ Focus on:
 - Validation rules
 """,
                 llm=self._get_llm_client(),
-                browser=Browser(config=config)
+                browser=Browser(config=config),
             )
 
             # Run exploration
@@ -98,14 +100,16 @@ Focus on:
             # Extract actions and observations
             actions_taken = self._extract_actions(result)
 
-            logger.info(f"✓ Browser Use exploration complete: {len(actions_taken)} actions")
+            logger.info(
+                f"✓ Browser Use exploration complete: {len(actions_taken)} actions"
+            )
 
             return BrowserUseResult(
                 success=True,
                 actions_taken=actions_taken,
                 form_data=self._extract_form_data(result),
                 screenshots=[],  # Browser Use handles screenshots internally
-                error=None
+                error=None,
             )
 
         except Exception as e:
@@ -115,12 +119,12 @@ Focus on:
                 actions_taken=[],
                 form_data={},
                 screenshots=[],
-                error=str(e)
+                error=str(e),
             )
 
     def _get_llm_client(self):
         """Get LLM client for Browser Use"""
-        from config.ai_client import ai_client
+        from config.multi_provider_client import ai_client
 
         # Browser Use expects OpenAI-compatible client
         return ai_client.client
@@ -130,42 +134,45 @@ Focus on:
         actions = []
 
         # Browser Use stores actions in result history
-        if hasattr(result, 'history'):
+        if hasattr(result, "history"):
             for action in result.history:
-                actions.append({
-                    'type': action.action_type if hasattr(action, 'action_type') else 'unknown',
-                    'target': action.target if hasattr(action, 'target') else None,
-                    'value': action.value if hasattr(action, 'value') else None,
-                    'success': action.success if hasattr(action, 'success') else True
-                })
+                actions.append(
+                    {
+                        "type": (
+                            action.action_type
+                            if hasattr(action, "action_type")
+                            else "unknown"
+                        ),
+                        "target": action.target if hasattr(action, "target") else None,
+                        "value": action.value if hasattr(action, "value") else None,
+                        "success": (
+                            action.success if hasattr(action, "success") else True
+                        ),
+                    }
+                )
 
         return actions
 
     def _extract_form_data(self, result: ActionResult) -> Dict[str, Any]:
         """Extract form structure from Browser Use result"""
-        form_data = {
-            'fields': [],
-            'observations': []
-        }
+        form_data = {"fields": [], "observations": []}
 
         # Parse result output for form information
-        if hasattr(result, 'output'):
+        if hasattr(result, "output"):
             output_text = str(result.output)
 
             # Simple extraction - look for field mentions
-            if 'input' in output_text.lower():
-                form_data['observations'].append('Found input fields')
-            if 'dropdown' in output_text.lower() or 'select' in output_text.lower():
-                form_data['observations'].append('Found dropdown fields')
-            if 'required' in output_text.lower():
-                form_data['observations'].append('Found required field indicators')
+            if "input" in output_text.lower():
+                form_data["observations"].append("Found input fields")
+            if "dropdown" in output_text.lower() or "select" in output_text.lower():
+                form_data["observations"].append("Found dropdown fields")
+            if "required" in output_text.lower():
+                form_data["observations"].append("Found required field indicators")
 
         return form_data
 
     async def test_form_filling(
-        self,
-        url: str,
-        test_data: Dict[str, Any]
+        self, url: str, test_data: Dict[str, Any]
     ) -> BrowserUseResult:
         """
         Test form filling using Browser Use
@@ -183,7 +190,7 @@ Focus on:
                 actions_taken=[],
                 form_data={},
                 screenshots=[],
-                error="browser-use not available"
+                error="browser-use not available",
             )
 
         logger.info(f"🧪 Testing form filling with Browser Use")
@@ -212,7 +219,7 @@ Be careful with:
 - Handling required fields
 """,
                 llm=self._get_llm_client(),
-                browser=Browser(config=config)
+                browser=Browser(config=config),
             )
 
             result = await agent.run()
@@ -220,9 +227,9 @@ Be careful with:
             return BrowserUseResult(
                 success=True,
                 actions_taken=self._extract_actions(result),
-                form_data={'test': 'completed'},
+                form_data={"test": "completed"},
                 screenshots=[],
-                error=None
+                error=None,
             )
 
         except Exception as e:
@@ -232,7 +239,7 @@ Be careful with:
                 actions_taken=[],
                 form_data={},
                 screenshots=[],
-                error=str(e)
+                error=str(e),
             )
 
 
@@ -249,7 +256,7 @@ async def demo_browser_use():
     # Explore a form
     result = await agent.explore_form(
         url="https://www.abuasathiranchi.org/SiteController/onlinegrievance",
-        municipality="abua_sathi"
+        municipality="abua_sathi",
     )
 
     print(f"\n{'='*60}")

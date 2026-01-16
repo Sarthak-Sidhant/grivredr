@@ -1,6 +1,7 @@
 """
 Field Query Utility - Maps natural language to dropdown values
 """
+
 import json
 import re
 from pathlib import Path
@@ -24,15 +25,11 @@ class FieldQueryEngine:
         for mapping_file in self.knowledge_dir.glob("*_field_mappings.json"):
             with open(mapping_file) as f:
                 data = json.load(f)
-                municipality = data['municipality']
+                municipality = data["municipality"]
                 self.mappings[municipality] = data
 
     def find_value(
-        self,
-        municipality: str,
-        field_name: str,
-        query: str,
-        threshold: int = 50
+        self, municipality: str, field_name: str, query: str, threshold: int = 50
     ) -> Optional[str]:
         """
         Find dropdown value matching natural language query
@@ -49,11 +46,11 @@ class FieldQueryEngine:
         if municipality not in self.mappings:
             return None
 
-        field_data = self.mappings[municipality]['field_mappings'].get(field_name)
+        field_data = self.mappings[municipality]["field_mappings"].get(field_name)
         if not field_data:
             return None
 
-        searchable = field_data['searchable_values']
+        searchable = field_data["searchable_values"]
         query_normalized = query.lower().strip()
 
         # Try exact match first
@@ -79,18 +76,16 @@ class FieldQueryEngine:
             # Also check if all query words are in label (keyword matching)
             query_words = set(query_normalized.split())
             label_words = set(label.split())
-            word_overlap = len(query_words & label_words) / len(query_words) if query_words else 0
+            word_overlap = (
+                len(query_words & label_words) / len(query_words) if query_words else 0
+            )
             if word_overlap >= 0.6 and word_overlap > best_score:
                 best_score = word_overlap
                 best_match = value
 
         return best_match
 
-    def parse_grievance_prompt(
-        self,
-        municipality: str,
-        prompt: str
-    ) -> Dict[str, str]:
+    def parse_grievance_prompt(self, municipality: str, prompt: str) -> Dict[str, str]:
         """
         Parse natural language prompt into field values
 
@@ -119,10 +114,10 @@ class FieldQueryEngine:
 
         # Common patterns for problem identification
         problem_patterns = [
-            r'report\s+(.+?)\s+(?:in|near|at)\s+',  # "report X in/near/at Y"
-            r'complaint\s+about\s+(.+?)\s+(?:in|near|at)\s+',  # "complaint about X in/near/at Y"
-            r'issue\s+with\s+(.+?)\s+(?:in|near|at)\s+',  # "issue with X in/near/at Y"
-            r'problem\s+of\s+(.+?)\s+(?:in|near|at)\s+',  # "problem of X in/near/at Y"
+            r"report\s+(.+?)\s+(?:in|near|at)\s+",  # "report X in/near/at Y"
+            r"complaint\s+about\s+(.+?)\s+(?:in|near|at)\s+",  # "complaint about X in/near/at Y"
+            r"issue\s+with\s+(.+?)\s+(?:in|near|at)\s+",  # "issue with X in/near/at Y"
+            r"problem\s+of\s+(.+?)\s+(?:in|near|at)\s+",  # "problem of X in/near/at Y"
         ]
 
         # Try to extract problem type
@@ -130,36 +125,35 @@ class FieldQueryEngine:
             match = re.search(pattern, prompt_lower)
             if match:
                 problem_query = match.group(1).strip()
-                value = self.find_value(municipality, 'problem', problem_query)
+                value = self.find_value(municipality, "problem", problem_query)
                 if value:
-                    result['problem_type'] = value  # Use problem_type for scraper compatibility
+                    result["problem_type"] = (
+                        value  # Use problem_type for scraper compatibility
+                    )
                 break
 
         # Try to extract area (usually after "in", "near", or "at" keywords)
-        area_match = re.search(r'\s+(?:in|near|at)\s+(.+?)$', prompt_lower)
+        area_match = re.search(r"\s+(?:in|near|at)\s+(.+?)$", prompt_lower)
         if area_match:
             area_query = area_match.group(1).strip()
-            value = self.find_value(municipality, 'wardforarea', area_query)
+            value = self.find_value(municipality, "wardforarea", area_query)
             if value:
-                result['area'] = value  # Use area for scraper compatibility
+                result["area"] = value  # Use area for scraper compatibility
 
         return result
 
     def get_field_label(
-        self,
-        municipality: str,
-        field_name: str,
-        value: str
+        self, municipality: str, field_name: str, value: str
     ) -> Optional[str]:
         """Get human-readable label for a field value"""
         if municipality not in self.mappings:
             return None
 
-        field_data = self.mappings[municipality]['field_mappings'].get(field_name)
+        field_data = self.mappings[municipality]["field_mappings"].get(field_name)
         if not field_data:
             return None
 
-        searchable = field_data['searchable_values']
+        searchable = field_data["searchable_values"]
         for label, val in searchable.items():
             if val == value:
                 return label
@@ -167,11 +161,7 @@ class FieldQueryEngine:
         return None
 
     def search_values(
-        self,
-        municipality: str,
-        field_name: str,
-        query: str,
-        limit: int = 5
+        self, municipality: str, field_name: str, query: str, limit: int = 5
     ) -> List[Tuple[str, str, int]]:
         """
         Search for multiple matching values (useful for suggestions)
@@ -182,11 +172,11 @@ class FieldQueryEngine:
         if municipality not in self.mappings:
             return []
 
-        field_data = self.mappings[municipality]['field_mappings'].get(field_name)
+        field_data = self.mappings[municipality]["field_mappings"].get(field_name)
         if not field_data:
             return []
 
-        searchable = field_data['searchable_values']
+        searchable = field_data["searchable_values"]
         query_normalized = query.lower().strip()
 
         matches = []
@@ -209,25 +199,27 @@ if __name__ == "__main__":
     print("Example 1: Full prompt parsing")
     print("-" * 50)
     prompt = "report air pollution in anand vihar colony"
-    result = engine.parse_grievance_prompt('ranchi_smart', prompt)
+    result = engine.parse_grievance_prompt("ranchi_smart", prompt)
     print(f"Prompt: {prompt}")
     print(f"Parsed: {result}")
     print()
 
     # Get human-readable labels
-    if 'problem_type' in result:
-        label = engine.get_field_label('ranchi_smart', 'problem', result['problem_type'])
+    if "problem_type" in result:
+        label = engine.get_field_label(
+            "ranchi_smart", "problem", result["problem_type"]
+        )
         print(f"Problem Type: {label} (value: {result['problem_type']})")
 
-    if 'area' in result:
-        label = engine.get_field_label('ranchi_smart', 'wardforarea', result['area'])
+    if "area" in result:
+        label = engine.get_field_label("ranchi_smart", "wardforarea", result["area"])
         print(f"Area: {label} (value: {result['area']})")
     print()
 
     # Example 2: Direct value lookup
     print("Example 2: Direct value lookup")
     print("-" * 50)
-    problem_value = engine.find_value('ranchi_smart', 'problem', 'garbage on road')
+    problem_value = engine.find_value("ranchi_smart", "problem", "garbage on road")
     print(f"Query: 'garbage on road'")
     print(f"Value: {problem_value}")
     print()
@@ -236,7 +228,7 @@ if __name__ == "__main__":
     print("Example 3: Fuzzy search (top 5 matches)")
     print("-" * 50)
     query = "dirty water"
-    matches = engine.search_values('ranchi_smart', 'problem', query, limit=5)
+    matches = engine.search_values("ranchi_smart", "problem", query, limit=5)
     print(f"Query: '{query}'")
     for label, value, score in matches:
         print(f"  - {label} (value: {value}, score: {score})")

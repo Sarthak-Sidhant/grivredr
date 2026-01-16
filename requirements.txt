@@ -10,9 +10,10 @@ playwright==1.57.0  # Pinned for consistency
 playwright-stealth==1.0.5
 browser-use==0.1.14  # AI-powered browser automation
 
-# AI/ML
+# AI/ML - Multiple Providers
 anthropic>=0.39.0  # Official Anthropic SDK (MegaLLM compatible)
-openai==1.57.0  # Pinned to v1 for langchain-fireworks compatibility
+openai>=1.57.0  # OpenAI GPT models
+google-generativeai>=0.3.0  # Google Gemini
 langchain==0.3.14  # LangChain framework
 langchain-anthropic==0.3.3  # Anthropic integration for LangChain
 langchain-community==0.3.14  # Community integrations
@@ -55,3 +56,6 @@ python-multipart==0.0.6
 
 # Monitoring & Logging
 loguru==0.7.2
+
+# TUI (Interactive Terminal UI)
+rich>=13.7.0

@@ -39,8 +39,7 @@ async def test_ranchi_training():
 
     # Initialize orchestrator
     orchestrator = Orchestrator(
-        headless=False,  # Show browser for debugging
-        dashboard_enabled=False  # CLI output only
+        headless=True,  # Headless for backend execution
     )
 
     print("\n" + "="*80)

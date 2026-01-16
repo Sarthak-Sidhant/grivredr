@@ -2,6 +2,7 @@
 End-to-End System Tests
 Tests complete workflows with all components integrated
 """
+
 import pytest
 import asyncio
 import json
@@ -23,19 +24,16 @@ async def test_single_municipality_complete_workflow():
     E2E Test: Complete workflow for single municipality
     Tests all phases: Discovery → JS Analysis → Validation → Code Generation
     """
-    print("\n" + "="*80)
+    print("\n" + "=" * 80)
     print("E2E TEST: Single Municipality Complete Workflow")
-    print("="*80)
+    print("=" * 80)
 
-    orchestrator = Orchestrator(
-        headless=True,
-        dashboard_enabled=False
-    )
+    orchestrator = Orchestrator(headless=True, dashboard_enabled=False)
 
     # Use a test municipality (you can replace with real one)
     result = await orchestrator.train_municipality(
         url="https://example.com/grievance-form",  # Replace with real URL for testing
-        municipality="test_municipality_e2e"
+        municipality="test_municipality_e2e",
     )
 
     # Assertions
@@ -60,9 +58,9 @@ async def test_pattern_library_learning():
     """
     E2E Test: Pattern library learns from successful scrapers
     """
-    print("\n" + "="*80)
+    print("\n" + "=" * 80)
     print("E2E TEST: Pattern Library Learning")
-    print("="*80)
+    print("=" * 80)
 
     pattern_lib = PatternLibrary()
 
@@ -78,8 +76,8 @@ async def test_pattern_library_learning():
         "fields": [
             {"name": "name", "type": "text"},
             {"name": "email", "type": "email"},
-            {"name": "phone", "type": "tel"}
-        ]
+            {"name": "phone", "type": "tel"},
+        ],
     }
 
     pattern_lib.store_pattern(
@@ -87,7 +85,7 @@ async def test_pattern_library_learning():
         form_schema=test_schema,
         code_snippets={"test": "code"},
         confidence_score=0.9,
-        success_rate=1.0
+        success_rate=1.0,
     )
 
     # Get updated stats
@@ -113,9 +111,9 @@ def test_health_monitoring_tracking():
     """
     E2E Test: Health monitoring tracks scraper executions
     """
-    print("\n" + "="*80)
+    print("\n" + "=" * 80)
     print("E2E TEST: Health Monitoring")
-    print("="*80)
+    print("=" * 80)
 
     monitor = HealthMonitor()
 
@@ -128,7 +126,7 @@ def test_health_monitoring_tracking():
             scraper_id=scraper_id,
             success=success,
             duration=5.0 + i * 0.5,
-            error_type="TestError" if not success else None
+            error_type="TestError" if not success else None,
         )
 
     # Get health
@@ -153,9 +151,9 @@ def test_ai_cache_cost_savings():
     """
     E2E Test: AI cache reduces costs
     """
-    print("\n" + "="*80)
+    print("\n" + "=" * 80)
     print("E2E TEST: AI Cache Cost Savings")
-    print("="*80)
+    print("=" * 80)
 
     if not ai_client.cache:
         pytest.skip("AI cache not enabled")
@@ -172,7 +170,9 @@ def test_ai_cache_cost_savings():
     # Check cost savings
     savings = stats.get("cost_savings", {})
     if savings.get("total_requests", 0) > 0:
-        print(f"   Cost savings: ${savings.get('savings', 0):.4f} ({savings.get('savings_percentage', 0):.1f}%)")
+        print(
+            f"   Cost savings: ${savings.get('savings', 0):.4f} ({savings.get('savings_percentage', 0):.1f}%)"
+        )
 
 
 @pytest.mark.e2e
@@ -182,32 +182,20 @@ async def test_batch_processing():
     """
     E2E Test: Batch processing handles multiple municipalities
     """
-    print("\n" + "="*80)
+    print("\n" + "=" * 80)
     print("E2E TEST: Batch Processing")
-    print("="*80)
+    print("=" * 80)
 
     # Small batch for testing
     municipalities = [
-        {
-            "municipality": "test_batch_1",
-            "url": "https://example.com/form1"
-        },
-        {
-            "municipality": "test_batch_2",
-            "url": "https://example.com/form2"
-        }
+        {"municipality": "test_batch_1", "url": "https://example.com/form1"},
+        {"municipality": "test_batch_2", "url": "https://example.com/form2"},
     ]
 
-    processor = BatchProcessor(
-        max_concurrent=2,
-        headless=True
-    )
+    processor = BatchProcessor(max_concurrent=2, headless=True)
 
     # Note: This will fail without real URLs, but tests the batch infrastructure
-    result = await processor.process_batch(
-        municipalities,
-        batch_name="test_e2e_batch"
-    )
+    result = await processor.process_batch(municipalities, batch_name="test_e2e_batch")
 
     assert result is not None
     assert "total_jobs" in result
@@ -222,9 +210,9 @@ def test_all_components_loadable():
     """
     E2E Test: All major components can be imported and initialized
     """
-    print("\n" + "="*80)
+    print("\n" + "=" * 80)
     print("E2E TEST: Component Integration")
-    print("="*80)
+    print("=" * 80)
 
     # Test all imports
     from agents.orchestrator import Orchestrator
@@ -255,7 +243,7 @@ def test_all_components_loadable():
         "JSRuntimeMonitor": JSRuntimeMonitor(),
         "AICache": AICache(),
         "AIClient": ai_client,
-        "FlaskApp": app
+        "FlaskApp": app,
     }
 
     for name, component in components.items():
@@ -270,9 +258,9 @@ def test_directory_structure():
     """
     E2E Test: Required directories exist
     """
-    print("\n" + "="*80)
+    print("\n" + "=" * 80)
     print("E2E TEST: Directory Structure")
-    print("="*80)
+    print("=" * 80)
 
     required_dirs = [
         "agents",
@@ -284,7 +272,7 @@ def test_directory_structure():
         "dashboard",
         "tests",
         "scripts",
-        "generated_scrapers"
+        "generated_scrapers",
     ]
 
     project_root = Path(__file__).parent.parent.parent
@@ -302,9 +290,9 @@ def test_file_structure():
     """
     E2E Test: Critical files exist
     """
-    print("\n" + "="*80)
+    print("\n" + "=" * 80)
     print("E2E TEST: File Structure")
-    print("="*80)
+    print("=" * 80)
 
     project_root = Path(__file__).parent.parent.parent
 
@@ -325,7 +313,7 @@ def test_file_structure():
         "scripts/test_ranchi.py",
         "scripts/run_scraper.py",
         ".github/workflows/test.yml",
-        "README.md"
+        "README.md",
     ]
 
     for file_path in critical_files:
@@ -338,9 +326,9 @@ def test_file_structure():
 
 if __name__ == "__main__":
     """Run E2E tests manually"""
-    print("\n" + "="*80)
+    print("\n" + "=" * 80)
     print("RUNNING END-TO-END TESTS")
-    print("="*80)
+    print("=" * 80)
 
     # Run tests
     asyncio.run(test_single_municipality_complete_workflow())
@@ -352,6 +340,6 @@ if __name__ == "__main__":
     test_directory_structure()
     test_file_structure()
 
-    print("\n" + "="*80)
+    print("\n" + "=" * 80)
     print("🎉 ALL E2E TESTS PASSED!")
-    print("="*80)
+    print("=" * 80)

@@ -87,8 +87,8 @@ TIMEOUT_SCRAPER_TEST = 60000  # 60 seconds
 SUBMIT_BUTTON_SELECTORS = [
     'button[type="submit"]',
     'input[type="submit"]',
-    'button.btn-primary',
-    '.submit-btn',
+    "button.btn-primary",
+    ".submit-btn",
     'button:has-text("Submit")',
     'button:has-text("Register")',
     '*[onclick*="submit"]',
@@ -96,13 +96,13 @@ SUBMIT_BUTTON_SELECTORS = [
 
 # Common error message selectors
 ERROR_MESSAGE_SELECTORS = [
-    '.error',
-    '.invalid',
-    '.text-danger',
-    '.error-message',
+    ".error",
+    ".invalid",
+    ".text-danger",
+    ".error-message",
     '[class*="error"]',
-    '.validation-error',
-    '.field-error',
+    ".validation-error",
+    ".field-error",
 ]
 
 # Ant Design specific selectors
@@ -127,7 +127,21 @@ FRAMEWORK_INDICATORS = {
     "bootstrap": ["form-control", "form-group", "btn-primary"],
     "material_ui": ["Mui", "MuiFormControl"],
     "asp_net": ["ctl00_", "__VIEWSTATE", ".aspx"],
+    "primeng": ["p-dropdown", "p-select", "ui-dropdown"],
+    "kendo": ["k-dropdown", "k-combobox", "k-widget"],
+    "jquery_ui": ["ui-selectmenu", "ui-autocomplete"],
 }
+
+
+# NOTE: Pattern-based detection has been replaced with AI vision.
+# The following constants were removed as part of the Darshi vision:
+# - SUCCESS_INDICATORS (AI analyzes screenshots instead)
+# - ERROR_INDICATORS (AI analyzes screenshots instead)
+# - DROPDOWN_PLACEHOLDERS (AI reads actual options)
+# - CASCADING_PARENT_INDICATORS (AI observes DOM changes)
+# - SUBMIT_BUTTON_TEXT (AI finds buttons visually)
+# - TEST_DATA_PATTERNS (AI generates data by reading form)
+# - TIMING_RANGES (measured dynamically from actual behavior)
 
 
 # =============================================================================

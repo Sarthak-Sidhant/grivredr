@@ -25,6 +25,7 @@ portals/
 │           │   └── recording.json
 │           └── screenshots/
 """
+
 import json
 import logging
 import shutil
@@ -91,7 +92,7 @@ class PortalManager:
         district: str,
         portal: str,
         scraper_code: str,
-        class_name: Optional[str] = None
+        class_name: Optional[str] = None,
     ) -> Path:
         """
         Save generated scraper code
@@ -115,11 +116,7 @@ class PortalManager:
         return scraper_path
 
     def save_structure(
-        self,
-        state: str,
-        district: str,
-        portal: str,
-        structure: Dict[str, Any]
+        self, state: str, district: str, portal: str, structure: Dict[str, Any]
     ) -> Path:
         """
         Save form structure JSON
@@ -136,7 +133,7 @@ class PortalManager:
         portal_path = self.create_portal_structure(state, district, portal)
         structure_path = portal_path / "structure.json"
 
-        with open(structure_path, 'w') as f:
+        with open(structure_path, "w") as f:
             json.dump(structure, f, indent=2)
         logger.info(f"Saved structure to {structure_path}")
 
@@ -149,7 +146,7 @@ class PortalManager:
         portal: str,
         dropdowns: Optional[Dict[str, Any]] = None,
         cascades: Optional[Dict[str, Any]] = None,
-        field_mappings: Optional[Dict[str, Any]] = None
+        field_mappings: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Path]:
         """
         Save dropdown context for AI requests
@@ -176,33 +173,28 @@ class PortalManager:
 
         if dropdowns:
             dropdowns_path = context_path / "dropdowns.json"
-            with open(dropdowns_path, 'w') as f:
+            with open(dropdowns_path, "w") as f:
                 json.dump(dropdowns, f, indent=2)
             saved_paths["dropdowns"] = dropdowns_path
             logger.info(f"Saved dropdowns to {dropdowns_path}")
 
         if cascades:
             cascades_path = context_path / "cascades.json"
-            with open(cascades_path, 'w') as f:
+            with open(cascades_path, "w") as f:
                 json.dump(cascades, f, indent=2)
             saved_paths["cascades"] = cascades_path
             logger.info(f"Saved cascades to {cascades_path}")
 
         if field_mappings:
             mappings_path = context_path / "field_mappings.json"
-            with open(mappings_path, 'w') as f:
+            with open(mappings_path, "w") as f:
                 json.dump(field_mappings, f, indent=2)
             saved_paths["field_mappings"] = mappings_path
             logger.info(f"Saved field_mappings to {mappings_path}")
 
         return saved_paths
 
-    def load_context(
-        self,
-        state: str,
-        district: str,
-        portal: str
-    ) -> Dict[str, Any]:
+    def load_context(self, state: str, district: str, portal: str) -> Dict[str, Any]:
         """
         Load all context needed for AI requests
 
@@ -238,7 +230,7 @@ class PortalManager:
         framework_detected: Optional[str] = None,
         patterns_used: Optional[List[str]] = None,
         training_cost: float = 0.0,
-        **extra_metadata
+        **extra_metadata,
     ) -> Path:
         """
         Save portal metadata
@@ -269,10 +261,10 @@ class PortalManager:
             "training_cost": training_cost,
             "created_at": datetime.now().isoformat(),
             "updated_at": datetime.now().isoformat(),
-            **extra_metadata
+            **extra_metadata,
         }
 
-        with open(metadata_path, 'w') as f:
+        with open(metadata_path, "w") as f:
             json.dump(metadata, f, indent=2)
         logger.info(f"Saved metadata to {metadata_path}")
 
@@ -284,7 +276,7 @@ class PortalManager:
         district: str,
         portal: str,
         session_data: Dict[str, Any],
-        recording_data: Optional[Dict[str, Any]] = None
+        recording_data: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Path]:
         """
         Save training session data
@@ -305,14 +297,14 @@ class PortalManager:
 
         # Save session
         session_path = training_path / "session.json"
-        with open(session_path, 'w') as f:
+        with open(session_path, "w") as f:
             json.dump(session_data, f, indent=2, default=str)
         saved_paths["session"] = session_path
 
         # Save recording if provided
         if recording_data:
             recording_path = training_path / "recording.json"
-            with open(recording_path, 'w') as f:
+            with open(recording_path, "w") as f:
                 json.dump(recording_data, f, indent=2, default=str)
             saved_paths["recording"] = recording_path
 
@@ -344,12 +336,14 @@ class PortalManager:
                 if district_dir.is_dir():
                     for portal_dir in district_dir.iterdir():
                         if portal_dir.is_dir():
-                            portals.append({
-                                "state": state_dir.name,
-                                "district": district_dir.name,
-                                "portal": portal_dir.name,
-                                "path": str(portal_dir)
-                            })
+                            portals.append(
+                                {
+                                    "state": state_dir.name,
+                                    "district": district_dir.name,
+                                    "portal": portal_dir.name,
+                                    "path": str(portal_dir),
+                                }
+                            )
 
         return portals
 
@@ -366,11 +360,7 @@ class PortalManager:
         Returns:
             Migration report with counts and any errors
         """
-        report = {
-            "migrated": [],
-            "errors": [],
-            "skipped": []
-        }
+        report = {"migrated": [], "errors": [], "skipped": []}
 
         # Migrate from scrapers/ directory
         scrapers_dir = Path("scrapers")
@@ -391,11 +381,14 @@ class PortalManager:
                         if portal_dir.is_dir():
                             try:
                                 self._migrate_scraper_dir(
-                                    portal_dir, report,
-                                    district=district_dir.name.replace("_district", "")
+                                    portal_dir,
+                                    report,
+                                    district=district_dir.name.replace("_district", ""),
                                 )
                             except Exception as e:
-                                report["errors"].append(f"outputs/{district_dir.name}/{portal_dir.name}: {e}")
+                                report["errors"].append(
+                                    f"outputs/{district_dir.name}/{portal_dir.name}: {e}"
+                                )
 
         # Migrate field mappings from knowledge/
         knowledge_dir = Path("knowledge")
@@ -406,15 +399,14 @@ class PortalManager:
                 except Exception as e:
                     report["errors"].append(f"knowledge/{file_path.name}: {e}")
 
-        logger.info(f"Migration complete: {len(report['migrated'])} migrated, "
-                    f"{len(report['errors'])} errors, {len(report['skipped'])} skipped")
+        logger.info(
+            f"Migration complete: {len(report['migrated'])} migrated, "
+            f"{len(report['errors'])} errors, {len(report['skipped'])} skipped"
+        )
         return report
 
     def _migrate_scraper_dir(
-        self,
-        source_dir: Path,
-        report: Dict[str, List],
-        district: Optional[str] = None
+        self, source_dir: Path, report: Dict[str, List], district: Optional[str] = None
     ):
         """Migrate a single scraper directory"""
         portal_name = source_dir.name.replace("_hybrid", "").replace("_scraper", "")
@@ -474,15 +466,18 @@ class PortalManager:
         if "field_mappings" in data:
             dropdowns = {}
             for field_name, field_data in data.get("field_mappings", {}).items():
-                if field_data.get("type") == "select" and "searchable_values" in field_data:
+                if (
+                    field_data.get("type") == "select"
+                    and "searchable_values" in field_data
+                ):
                     dropdowns[field_name] = {
                         "selector": field_data.get("selector"),
-                        "options": field_data.get("searchable_values", {})
+                        "options": field_data.get("searchable_values", {}),
                     }
 
             if dropdowns:
                 dropdowns_path = context_path / "dropdowns.json"
-                with open(dropdowns_path, 'w') as f:
+                with open(dropdowns_path, "w") as f:
                     json.dump(dropdowns, f, indent=2)
 
         report["migrated"].append(f"{source_file} -> {dest}")

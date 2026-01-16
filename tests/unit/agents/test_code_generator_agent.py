@@ -1,6 +1,7 @@
 """
 Unit tests for CodeGeneratorAgent
 """
+
 import pytest
 import asyncio
 from unittest.mock import Mock, patch, AsyncMock, MagicMock
@@ -59,10 +60,14 @@ def some_function():
                 {"name": "full_name", "type": "text"},
                 {"name": "mobile", "type": "text"},
                 {"name": "email", "type": "text"},
-                {"name": "category", "type": "dropdown", "options": ["Option1", "Option2"]},
+                {
+                    "name": "category",
+                    "type": "dropdown",
+                    "options": ["Option1", "Option2"],
+                },
                 {"name": "description", "type": "textarea"},
                 {"name": "agree", "type": "checkbox"},
-                {"name": "document", "type": "file"}
+                {"name": "document", "type": "file"},
             ]
         }
 
@@ -100,7 +105,7 @@ def some_function():
             syntax_valid=True,
             validation_passed=True,
             validation_attempts=1,
-            test_results={"confidence_score": 0.8}
+            test_results={"confidence_score": 0.8},
         )
 
         # Should get bonus for passing first try
@@ -115,7 +120,7 @@ def some_function():
             syntax_valid=True,
             validation_passed=False,
             validation_attempts=3,
-            test_results={"confidence_score": 0.8}
+            test_results={"confidence_score": 0.8},
         )
 
         # Should be significantly reduced
@@ -129,7 +134,7 @@ def some_function():
             syntax_valid=False,
             validation_passed=True,
             validation_attempts=1,
-            test_results={"confidence_score": 0.8}
+            test_results={"confidence_score": 0.8},
         )
 
         # Should be heavily penalized
@@ -143,7 +148,7 @@ def some_function():
             syntax_valid=True,
             validation_passed=True,
             validation_attempts=3,
-            test_results={"confidence_score": 0.9}
+            test_results={"confidence_score": 0.9},
         )
 
         # Should be reduced but not as much as failure
@@ -177,14 +182,18 @@ class TestScraper
         assert is_valid is False
 
     @pytest.mark.asyncio
-    async def test_execute_attempt_validation_disabled(self, mock_ai_client, sample_form_schema):
+    async def test_execute_attempt_validation_disabled(
+        self, mock_ai_client, sample_form_schema
+    ):
         """Test code generation with validation disabled"""
         agent = CodeGeneratorAgent(enable_validation=False)
 
         # Mock AI response with valid Python code
         mock_response = MagicMock()
         mock_response.choices = [MagicMock()]
-        mock_response.choices[0].message.content = """
+        mock_response.choices[
+            0
+        ].message.content = """
 ```python
 class TestMunicipalityScraper:
     async def submit_grievance(self, data):
@@ -195,12 +204,17 @@ class TestMunicipalityScraper:
         mock_response.usage.prompt_tokens = 100
         mock_response.usage.completion_tokens = 200
 
-        with patch('config.ai_client.ai_client.client.chat.completions.create', return_value=mock_response):
-            result = await agent._execute_attempt({
-                "schema": sample_form_schema,
-                "js_analysis": {},
-                "test_results": {"confidence_score": 0.8}
-            })
+        with patch(
+            "config.ai_client.ai_client.client.chat.completions.create",
+            return_value=mock_response,
+        ):
+            result = await agent._execute_attempt(
+                {
+                    "schema": sample_form_schema,
+                    "js_analysis": {},
+                    "test_results": {"confidence_score": 0.8},
+                }
+            )
 
         assert result["success"] is True
         assert "scraper" in result
@@ -209,7 +223,9 @@ class TestMunicipalityScraper:
         assert result["scraper"]["validation_passed"] is True
 
     @pytest.mark.asyncio
-    async def test_heal_scraper(self, mock_ai_client, sample_form_schema, mock_validation_result_failure):
+    async def test_heal_scraper(
+        self, mock_ai_client, sample_form_schema, mock_validation_result_failure
+    ):
         """Test self-healing functionality"""
         agent = CodeGeneratorAgent()
 
@@ -223,7 +239,9 @@ class TestScraper:
         # Mock AI healing response
         mock_response = MagicMock()
         mock_response.choices = [MagicMock()]
-        mock_response.choices[0].message.content = """
+        mock_response.choices[
+            0
+        ].message.content = """
 ```python
 class TestScraper:
     async def submit_grievance(self, data):
@@ -235,11 +253,12 @@ class TestScraper:
         mock_response.usage.prompt_tokens = 150
         mock_response.usage.completion_tokens = 250
 
-        with patch('config.ai_client.ai_client.client.chat.completions.create', return_value=mock_response):
+        with patch(
+            "config.ai_client.ai_client.client.chat.completions.create",
+            return_value=mock_response,
+        ):
             healed_code = await agent._heal_scraper(
-                failed_code,
-                mock_validation_result_failure,
-                sample_form_schema
+                failed_code, mock_validation_result_failure, sample_form_schema
             )
 
         assert "class TestScraper" in healed_code

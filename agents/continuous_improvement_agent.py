@@ -23,11 +23,13 @@ from playwright.async_api import async_playwright
 import base64
 
 from dotenv import load_dotenv
+
 load_dotenv()
 
 
 class ImprovementType(Enum):
     """Types of improvements that can be made"""
+
     SELECTOR_FIX = "selector_fix"
     TIMING_FIX = "timing_fix"
     FRAMEWORK_FIX = "framework_fix"  # ant-design, select2, etc.
@@ -41,6 +43,7 @@ class ImprovementType(Enum):
 @dataclass
 class TestCase:
     """A single test case for the scraper"""
+
     name: str
     data: Dict[str, Any]
     expected_outcome: str = "form_filled"  # form_filled, submitted, error_expected
@@ -50,6 +53,7 @@ class TestCase:
 @dataclass
 class TestResult:
     """Result of running a test case"""
+
     test_case: TestCase
     success: bool
     error: Optional[str] = None
@@ -57,12 +61,15 @@ class TestResult:
     screenshot_base64: Optional[str] = None
     page_html: Optional[str] = None
     duration: float = 0.0
-    fields_status: Dict[str, str] = field(default_factory=dict)  # field -> "filled" | "failed" | "skipped"
+    fields_status: Dict[str, str] = field(
+        default_factory=dict
+    )  # field -> "filled" | "failed" | "skipped"
 
 
 @dataclass
 class ImprovementSuggestion:
     """A suggested improvement to the code"""
+
     improvement_type: ImprovementType
     description: str
     confidence: float
@@ -74,6 +81,7 @@ class ImprovementSuggestion:
 @dataclass
 class ImprovementCycle:
     """One cycle of the improvement loop"""
+
     cycle_number: int
     test_results: List[TestResult]
     improvements_made: List[ImprovementSuggestion]
@@ -133,6 +141,7 @@ class QualityMetrics:
 
 class CostTracker:
     """Track API costs"""
+
     PRICING = {
         "claude-sonnet-4-5-20250929": {"input": 3.0, "output": 15.0},
     }
@@ -143,8 +152,9 @@ class CostTracker:
 
     def add(self, model: str, input_tokens: int, output_tokens: int) -> float:
         pricing = self.PRICING.get(model, {"input": 3.0, "output": 15.0})
-        cost = (input_tokens * pricing["input"] / 1_000_000) + \
-               (output_tokens * pricing["output"] / 1_000_000)
+        cost = (input_tokens * pricing["input"] / 1_000_000) + (
+            output_tokens * pricing["output"] / 1_000_000
+        )
         self.total_cost += cost
         self.calls += 1
         return cost
@@ -161,7 +171,7 @@ class ContinuousImprovementAgent:
         target_success_rate: float = 0.9,
         max_cost: float = 2.0,
         screenshot_dir: str = "screenshots/improvement",
-        headless: bool = True
+        headless: bool = True,
     ):
         self.max_cycles = max_cycles
         self.target_success_rate = target_success_rate
@@ -172,8 +182,7 @@ class ContinuousImprovementAgent:
 
         self.api_key = os.getenv("api_key")
         self.client = anthropic.Anthropic(
-            api_key=self.api_key,
-            base_url="https://ai.megallm.io"
+            api_key=self.api_key, base_url="https://ai.megallm.io"
         )
         self.cost_tracker = CostTracker()
         self.quality_metrics = QualityMetrics()
@@ -182,7 +191,7 @@ class ContinuousImprovementAgent:
         self,
         scraper_path: str,
         test_cases: List[TestCase],
-        portal_context: Optional[Dict] = None
+        portal_context: Optional[Dict] = None,
     ) -> Tuple[bool, str, QualityMetrics]:
         """
         Run continuous improvement loop on a scraper
@@ -219,13 +228,17 @@ class ContinuousImprovementAgent:
                 break
 
             # Run all test cases
-            test_results = await self._run_test_cases(scraper_path, test_cases, cycle_num)
+            test_results = await self._run_test_cases(
+                scraper_path, test_cases, cycle_num
+            )
 
             # Calculate success rate
             success_count = sum(1 for r in test_results if r.success)
             success_rate = success_count / len(test_results) if test_results else 0
 
-            print(f"\n📊 Results: {success_count}/{len(test_results)} passed ({success_rate:.0%})")
+            print(
+                f"\n📊 Results: {success_count}/{len(test_results)} passed ({success_rate:.0%})"
+            )
 
             # Check if we've reached target
             if success_rate >= self.target_success_rate:
@@ -234,7 +247,7 @@ class ContinuousImprovementAgent:
                     test_results=test_results,
                     improvements_made=[],
                     success_rate=success_rate,
-                    cost=self.cost_tracker.total_cost - self.quality_metrics.total_cost
+                    cost=self.cost_tracker.total_cost - self.quality_metrics.total_cost,
                 )
                 self.quality_metrics.add_cycle(cycle)
 
@@ -245,7 +258,7 @@ class ContinuousImprovementAgent:
                     scraper_path=scraper_path,
                     portal_context=portal_context,
                     success_rate=success_rate,
-                    cycles_needed=cycle_num
+                    cycles_needed=cycle_num,
                 )
 
                 return True, str(scraper_path), self.quality_metrics
@@ -255,9 +268,7 @@ class ContinuousImprovementAgent:
             print(f"\n🔍 Analyzing {len(failed_results)} failures...")
 
             improvements = await self._analyze_and_suggest_improvements(
-                scraper_path.read_text(),
-                failed_results,
-                portal_context
+                scraper_path.read_text(), failed_results, portal_context
             )
 
             print(f"   Generated {len(improvements)} improvement suggestions")
@@ -265,7 +276,9 @@ class ContinuousImprovementAgent:
             # Apply improvements
             if improvements:
                 current_code = scraper_path.read_text()
-                new_code = await self._apply_improvements(current_code, improvements, portal_context)
+                new_code = await self._apply_improvements(
+                    current_code, improvements, portal_context
+                )
 
                 if new_code and new_code != current_code:
                     scraper_path.write_text(new_code)
@@ -279,17 +292,21 @@ class ContinuousImprovementAgent:
                 test_results=test_results,
                 improvements_made=improvements,
                 success_rate=success_rate,
-                cost=self.cost_tracker.total_cost - self.quality_metrics.total_cost
+                cost=self.cost_tracker.total_cost - self.quality_metrics.total_cost,
             )
             self.quality_metrics.add_cycle(cycle)
 
             # Check if we should continue
             if not self.quality_metrics.should_continue(self.target_success_rate):
-                print(f"\n⚠️ Stopping: {'degrading' if self.quality_metrics.get_trend() == 'degrading' else 'no progress'}")
+                print(
+                    f"\n⚠️ Stopping: {'degrading' if self.quality_metrics.get_trend() == 'degrading' else 'no progress'}"
+                )
                 break
 
         # Final summary
-        final_success = self.quality_metrics.best_success_rate >= self.target_success_rate
+        final_success = (
+            self.quality_metrics.best_success_rate >= self.target_success_rate
+        )
         print(f"\n{'='*60}")
         print("IMPROVEMENT COMPLETE")
         print(f"{'='*60}")
@@ -302,10 +319,7 @@ class ContinuousImprovementAgent:
         return final_success, str(scraper_path), self.quality_metrics
 
     async def _run_test_cases(
-        self,
-        scraper_path: Path,
-        test_cases: List[TestCase],
-        cycle_num: int
+        self, scraper_path: Path, test_cases: List[TestCase], cycle_num: int
     ) -> List[TestResult]:
         """Run all test cases against the scraper"""
         results = []
@@ -328,11 +342,7 @@ class ContinuousImprovementAgent:
         return results
 
     async def _run_single_test(
-        self,
-        scraper_path: Path,
-        test_case: TestCase,
-        cycle_num: int,
-        test_num: int
+        self, scraper_path: Path, test_case: TestCase, cycle_num: int, test_num: int
     ) -> TestResult:
         """Run a single test case"""
         start_time = datetime.now()
@@ -341,6 +351,7 @@ class ContinuousImprovementAgent:
         try:
             # Import scraper dynamically
             import importlib.util
+
             spec = importlib.util.spec_from_file_location("scraper", scraper_path)
             scraper_module = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(scraper_module)
@@ -367,7 +378,9 @@ class ContinuousImprovementAgent:
                 await filler.fill_form(test_case.data)
 
                 # Take screenshot
-                screenshot_path = self.screenshot_dir / f"cycle{cycle_num}_test{test_num}.png"
+                screenshot_path = (
+                    self.screenshot_dir / f"cycle{cycle_num}_test{test_num}.png"
+                )
                 await filler.page.screenshot(path=str(screenshot_path))
 
                 with open(screenshot_path, "rb") as f:
@@ -394,19 +407,21 @@ class ContinuousImprovementAgent:
         self,
         current_code: str,
         failed_results: List[TestResult],
-        portal_context: Optional[Dict]
+        portal_context: Optional[Dict],
     ) -> List[ImprovementSuggestion]:
         """Analyze failures and suggest improvements"""
 
         # Build analysis prompt
         failures_summary = []
         for r in failed_results[:3]:  # Limit to first 3 failures for cost
-            failures_summary.append({
-                "test_name": r.test_case.name,
-                "test_data": r.test_case.data,
-                "error": r.error,
-                "error_type": r.error_type
-            })
+            failures_summary.append(
+                {
+                    "test_name": r.test_case.name,
+                    "test_data": r.test_case.data,
+                    "error": r.error,
+                    "error_type": r.error_type,
+                }
+            )
 
         prompt = f"""You are a code improvement expert analyzing a Playwright web scraper.
 
@@ -459,27 +474,29 @@ Return ONLY the JSON array, no other text."""
 
         # Add screenshot from first failure if available
         if failed_results and failed_results[0].screenshot_base64:
-            messages_content.append({
-                "type": "image",
-                "source": {
-                    "type": "base64",
-                    "media_type": "image/png",
-                    "data": failed_results[0].screenshot_base64
+            messages_content.append(
+                {
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": "image/png",
+                        "data": failed_results[0].screenshot_base64,
+                    },
                 }
-            })
+            )
 
         messages_content.append({"type": "text", "text": prompt})
 
         response = self.client.messages.create(
             model="claude-sonnet-4-5-20250929",
             max_tokens=4000,
-            messages=[{"role": "user", "content": messages_content}]
+            messages=[{"role": "user", "content": messages_content}],
         )
 
         self.cost_tracker.add(
             "claude-sonnet-4-5-20250929",
             response.usage.input_tokens,
-            response.usage.output_tokens
+            response.usage.output_tokens,
         )
 
         # Parse suggestions
@@ -488,7 +505,7 @@ Return ONLY the JSON array, no other text."""
 
         try:
             # Extract JSON from response
-            json_match = re.search(r'\[[\s\S]*\]', text)
+            json_match = re.search(r"\[[\s\S]*\]", text)
             if json_match:
                 raw_suggestions = json.loads(json_match.group())
                 for s in raw_suggestions:
@@ -497,14 +514,16 @@ Return ONLY the JSON array, no other text."""
                     except ValueError:
                         improvement_type = ImprovementType.LOGIC_FIX
 
-                    suggestions.append(ImprovementSuggestion(
-                        improvement_type=improvement_type,
-                        description=s.get("description", ""),
-                        confidence=s.get("confidence", 0.5),
-                        code_location=s.get("code_location", ""),
-                        suggested_fix=s.get("suggested_fix", ""),
-                        reasoning=s.get("reasoning", "")
-                    ))
+                    suggestions.append(
+                        ImprovementSuggestion(
+                            improvement_type=improvement_type,
+                            description=s.get("description", ""),
+                            confidence=s.get("confidence", 0.5),
+                            code_location=s.get("code_location", ""),
+                            suggested_fix=s.get("suggested_fix", ""),
+                            reasoning=s.get("reasoning", ""),
+                        )
+                    )
         except json.JSONDecodeError:
             pass
 
@@ -517,14 +536,16 @@ Return ONLY the JSON array, no other text."""
         self,
         current_code: str,
         improvements: List[ImprovementSuggestion],
-        portal_context: Optional[Dict]
+        portal_context: Optional[Dict],
     ) -> str:
         """Apply improvement suggestions to generate new code"""
 
-        improvements_text = "\n".join([
-            f"- [{i.improvement_type.value}] {i.description}\n  Fix: {i.suggested_fix}\n  Confidence: {i.confidence}"
-            for i in improvements[:5]  # Limit to top 5
-        ])
+        improvements_text = "\n".join(
+            [
+                f"- [{i.improvement_type.value}] {i.description}\n  Fix: {i.suggested_fix}\n  Confidence: {i.confidence}"
+                for i in improvements[:5]  # Limit to top 5
+            ]
+        )
 
         prompt = f"""You are a code improvement expert. Apply the suggested improvements to fix the scraper.
 
@@ -555,19 +576,19 @@ No explanations, just the code."""
         response = self.client.messages.create(
             model="claude-sonnet-4-5-20250929",
             max_tokens=8000,
-            messages=[{"role": "user", "content": prompt}]
+            messages=[{"role": "user", "content": prompt}],
         )
 
         self.cost_tracker.add(
             "claude-sonnet-4-5-20250929",
             response.usage.input_tokens,
-            response.usage.output_tokens
+            response.usage.output_tokens,
         )
 
         text = response.content[0].text
 
         # Extract code
-        code_match = re.search(r'```python\s*(.*?)\s*```', text, re.DOTALL)
+        code_match = re.search(r"```python\s*(.*?)\s*```", text, re.DOTALL)
         if code_match:
             return code_match.group(1)
 
@@ -584,7 +605,7 @@ No explanations, just the code."""
             "name": "Test User",
             "mobile": "9876543210",
             "email": "test@example.com",
-            "address": "123 Test Street"
+            "address": "123 Test Street",
         }
 
         # Add dropdown values from context
@@ -597,26 +618,26 @@ No explanations, just the code."""
                         basic_data[field_name.lower().replace(" ", "_")] = opt_text
                         break
 
-        test_cases.append(TestCase(
-            name="Basic form fill",
-            data=basic_data,
-            priority=1
-        ))
+        test_cases.append(TestCase(name="Basic form fill", data=basic_data, priority=1))
 
         # Test with different dropdown options
         for field_name, dropdown_info in list(dropdowns.items())[:2]:
             options = list(dropdown_info.get("options", {}).keys())
-            valid_options = [o for o in options if o not in ["--Select--", "--Not Set--", ""]]
+            valid_options = [
+                o for o in options if o not in ["--Select--", "--Not Set--", ""]
+            ]
 
             if len(valid_options) >= 2:
                 alt_data = basic_data.copy()
                 alt_data[field_name.lower().replace(" ", "_")] = valid_options[1]
 
-                test_cases.append(TestCase(
-                    name=f"Alt {field_name}: {valid_options[1][:20]}",
-                    data=alt_data,
-                    priority=2
-                ))
+                test_cases.append(
+                    TestCase(
+                        name=f"Alt {field_name}: {valid_options[1][:20]}",
+                        data=alt_data,
+                        priority=2,
+                    )
+                )
 
         return test_cases
 
@@ -625,7 +646,7 @@ No explanations, just the code."""
         scraper_path: Path,
         portal_context: Optional[Dict],
         success_rate: float,
-        cycles_needed: int
+        cycles_needed: int,
     ):
         """
         Store successful scraper pattern in the pattern library for future reuse.
@@ -637,7 +658,11 @@ No explanations, just the code."""
             from knowledge.pattern_library import PatternLibrary
 
             # Extract portal info
-            portal_name = scraper_path.parent.name if scraper_path.parent.name != "scrapers" else scraper_path.stem
+            portal_name = (
+                scraper_path.parent.name
+                if scraper_path.parent.name != "scrapers"
+                else scraper_path.stem
+            )
             form_url = portal_context.get("url", "") if portal_context else ""
 
             # Build form schema from context
@@ -647,8 +672,14 @@ No explanations, just the code."""
                 if not form_schema and "dropdowns" in portal_context:
                     form_schema = {
                         "fields": [
-                            {"name": name, "type": "select", "options": list(info.get("options", {}).keys())}
-                            for name, info in portal_context.get("dropdowns", {}).items()
+                            {
+                                "name": name,
+                                "type": "select",
+                                "options": list(info.get("options", {}).keys()),
+                            }
+                            for name, info in portal_context.get(
+                                "dropdowns", {}
+                            ).items()
                         ]
                     }
 
@@ -672,11 +703,15 @@ No explanations, just the code."""
                 generated_code=scraper_code,
                 confidence_score=confidence,
                 validation_attempts=cycles_needed,
-                js_analysis=portal_context.get("js_analysis") if portal_context else None
+                js_analysis=(
+                    portal_context.get("js_analysis") if portal_context else None
+                ),
             )
 
             if success:
-                print(f"   📚 Improved pattern stored (confidence: {confidence:.0%}, success rate: {success_rate:.0%})")
+                print(
+                    f"   📚 Improved pattern stored (confidence: {confidence:.0%}, success rate: {success_rate:.0%})"
+                )
             else:
                 print(f"   ⚠️ Failed to store improved pattern")
 
@@ -690,7 +725,11 @@ No explanations, just the code."""
         return {
             "total_cycles": len(self.quality_metrics.cycles),
             "best_success_rate": self.quality_metrics.best_success_rate,
-            "final_success_rate": self.quality_metrics.cycles[-1].success_rate if self.quality_metrics.cycles else 0,
+            "final_success_rate": (
+                self.quality_metrics.cycles[-1].success_rate
+                if self.quality_metrics.cycles
+                else 0
+            ),
             "total_cost": self.quality_metrics.total_cost,
             "trend": self.quality_metrics.get_trend(),
             "cycles": [
@@ -700,10 +739,10 @@ No explanations, just the code."""
                     "tests_passed": sum(1 for r in c.test_results if r.success),
                     "tests_total": len(c.test_results),
                     "improvements_applied": len(c.improvements_made),
-                    "cost": c.cost
+                    "cost": c.cost,
                 }
                 for c in self.quality_metrics.cycles
-            ]
+            ],
         }
 
 
@@ -728,10 +767,7 @@ async def main():
                 portal_context = {"dropdowns": json.load(f)}
 
     agent = ContinuousImprovementAgent(
-        max_cycles=3,
-        target_success_rate=0.8,
-        max_cost=1.0,
-        headless=True
+        max_cycles=3, target_success_rate=0.8, max_cost=1.0, headless=True
     )
 
     # Generate test cases from context or use defaults
@@ -744,16 +780,14 @@ async def main():
                 data={
                     "name": "Test User",
                     "mobile": "9876543210",
-                    "email": "test@example.com"
+                    "email": "test@example.com",
                 },
-                priority=1
+                priority=1,
             )
         ]
 
     success, final_path, metrics = await agent.improve_scraper(
-        scraper_path=scraper_path,
-        test_cases=test_cases,
-        portal_context=portal_context
+        scraper_path=scraper_path, test_cases=test_cases, portal_context=portal_context
     )
 
     # Save report

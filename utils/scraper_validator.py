@@ -1,6 +1,7 @@
 """
 Scraper Validator - Validates generated scrapers before production deployment
 """
+
 import asyncio
 import importlib.util
 import logging
@@ -18,6 +19,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class ValidationResult:
     """Result of scraper validation"""
+
     success: bool
     scraper_id: str
     execution_status: str  # "passed", "failed", "timeout", "error"
@@ -41,7 +43,7 @@ class ValidationResult:
             "warnings": self.warnings,
             "execution_time": self.execution_time,
             "captured_operations": self.captured_operations,
-            "screenshot_path": self.screenshot_path
+            "screenshot_path": self.screenshot_path,
         }
 
 
@@ -65,7 +67,7 @@ class ScraperValidator:
         self,
         scraper_path: Path,
         test_data: Dict[str, Any],
-        expected_schema: Optional[Dict] = None
+        expected_schema: Optional[Dict] = None,
     ) -> ValidationResult:
         """
         Validate a generated scraper by executing it with test data
@@ -80,9 +82,7 @@ class ScraperValidator:
         """
         scraper_id = scraper_path.stem
         result = ValidationResult(
-            success=False,
-            scraper_id=scraper_id,
-            execution_status="pending"
+            success=False, scraper_id=scraper_id, execution_status="pending"
         )
 
         logger.info(f"🧪 Validating scraper: {scraper_id}")
@@ -104,27 +104,25 @@ class ScraperValidator:
 
             # Step 3: Execute the scraper in test mode
             execution_result = await self._execute_scraper(
-                scraper_class,
-                test_data,
-                result
+                scraper_class, test_data, result
             )
 
             # Step 4: Validate the output schema
             if expected_schema and execution_result:
                 schema_valid = self._validate_schema(
-                    execution_result,
-                    expected_schema,
-                    result
+                    execution_result, expected_schema, result
                 )
 
             # Step 5: Determine overall success
             result.success = (
-                result.execution_status == "passed" and
-                len(result.execution_errors) == 0 and
-                len(result.schema_errors) == 0
+                result.execution_status == "passed"
+                and len(result.execution_errors) == 0
+                and len(result.schema_errors) == 0
             )
 
-            logger.info(f"✅ Validation complete: {scraper_id} - {'PASSED' if result.success else 'FAILED'}")
+            logger.info(
+                f"✅ Validation complete: {scraper_id} - {'PASSED' if result.success else 'FAILED'}"
+            )
 
         except asyncio.TimeoutError:
             result.execution_status = "timeout"
@@ -143,8 +141,7 @@ class ScraperValidator:
         """Dynamically load scraper module"""
         try:
             spec = importlib.util.spec_from_file_location(
-                scraper_path.stem,
-                scraper_path
+                scraper_path.stem, scraper_path
             )
             if not spec or not spec.loader:
                 return None
@@ -174,10 +171,7 @@ class ScraperValidator:
         return None
 
     async def _execute_scraper(
-        self,
-        scraper_class,
-        test_data: Dict[str, Any],
-        result: ValidationResult
+        self, scraper_class, test_data: Dict[str, Any], result: ValidationResult
     ) -> Optional[Dict]:
         """
         Execute the scraper with test data
@@ -186,6 +180,7 @@ class ScraperValidator:
             Scraper output dict or None on failure
         """
         import time
+
         start_time = time.time()
 
         try:
@@ -193,19 +188,18 @@ class ScraperValidator:
             scraper_instance = scraper_class(headless=True)
 
             # Check if scraper has run_test_mode method
-            if hasattr(scraper_instance, 'run_test_mode'):
+            if hasattr(scraper_instance, "run_test_mode"):
                 logger.info("✓ Using run_test_mode() method")
                 execution_result = await asyncio.wait_for(
-                    scraper_instance.run_test_mode(test_data),
-                    timeout=self.timeout
+                    scraper_instance.run_test_mode(test_data), timeout=self.timeout
                 )
-            elif hasattr(scraper_instance, 'submit_grievance'):
+            elif hasattr(scraper_instance, "submit_grievance"):
                 # Fallback: use mock context
                 logger.info("✓ Using submit_grievance() with mocking")
                 with PlaywrightMockContext(test_mode=self.test_mode) as mock_mgr:
                     execution_result = await asyncio.wait_for(
                         scraper_instance.submit_grievance(test_data),
-                        timeout=self.timeout
+                        timeout=self.timeout,
                     )
                     result.captured_operations = mock_mgr.get_captured_calls()
             else:
@@ -221,13 +215,17 @@ class ScraperValidator:
             if isinstance(execution_result, dict):
                 if execution_result.get("success"):
                     result.execution_status = "passed"
-                    logger.info(f"✓ Scraper executed successfully in {result.execution_time:.2f}s")
+                    logger.info(
+                        f"✓ Scraper executed successfully in {result.execution_time:.2f}s"
+                    )
                 else:
                     result.execution_status = "failed"
                     result.execution_errors.append(
                         execution_result.get("error", "Unknown error")
                     )
-                    logger.warning(f"⚠️ Scraper execution failed: {execution_result.get('error')}")
+                    logger.warning(
+                        f"⚠️ Scraper execution failed: {execution_result.get('error')}"
+                    )
             else:
                 result.execution_status = "failed"
                 result.execution_errors.append(
@@ -246,10 +244,7 @@ class ScraperValidator:
             return None
 
     def _validate_schema(
-        self,
-        execution_result: Dict,
-        expected_schema: Dict,
-        result: ValidationResult
+        self, execution_result: Dict, expected_schema: Dict, result: ValidationResult
     ) -> bool:
         """
         Validate that execution result matches expected schema
@@ -287,7 +282,9 @@ class ScraperValidator:
         if schema_valid:
             logger.info("✓ Schema validation passed")
         else:
-            logger.warning(f"⚠️ Schema validation failed: {len(result.schema_errors)} errors")
+            logger.warning(
+                f"⚠️ Schema validation failed: {len(result.schema_errors)} errors"
+            )
 
         return schema_valid
 
@@ -301,7 +298,7 @@ class ScraperValidator:
         import ast
 
         try:
-            with open(scraper_path, 'r') as f:
+            with open(scraper_path, "r") as f:
                 code = f.read()
 
             ast.parse(code)

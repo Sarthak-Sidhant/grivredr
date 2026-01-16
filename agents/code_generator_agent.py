@@ -2,6 +2,7 @@
 Code Generator Agent - Generates production-ready scraper code
 Creates Python scrapers based on validated form schemas and JS analysis
 """
+
 import asyncio
 import ast
 import json
@@ -13,14 +14,14 @@ from dataclasses import dataclass
 
 from agents.base_agent import BaseAgent, cost_tracker
 from agents.form_discovery_agent import FormSchema
-from config.ai_client import ai_client
+from config.multi_provider_client import ai_client
 from config.healing_prompts import HEALING_PROMPT_TEMPLATE
 from utils.scraper_validator import ScraperValidator, ValidationResult
 from knowledge.pattern_library import PatternLibrary
 from knowledge.code_templates import (
     get_template_code_for_prompt,
     UIFramework,
-    get_templates_for_framework
+    get_templates_for_framework,
 )
 
 logging.basicConfig(level=logging.INFO)
@@ -30,6 +31,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class GeneratedScraper:
     """Generated scraper information"""
+
     file_path: str
     code: str
     class_name: str
@@ -47,9 +49,11 @@ class CodeGeneratorAgent(BaseAgent):
     Agent that generates production-ready scraper code from validated schemas
     """
 
-    def __init__(self, enable_validation: bool = True, use_pattern_library: bool = True):
+    def __init__(
+        self, enable_validation: bool = True, use_pattern_library: bool = True
+    ):
         super().__init__(name="CodeGeneratorAgent", max_attempts=3)
-        self.output_dir = Path("outputs/generated_scrapers")
+        self.output_dir = Path("scrapers")
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.enable_validation = enable_validation
         self.use_pattern_library = use_pattern_library
@@ -81,7 +85,9 @@ class CodeGeneratorAgent(BaseAgent):
             # Phase 2: Validate syntax
             syntax_valid = self._validate_syntax(scraper_code)
             if not syntax_valid:
-                logger.warning("Generated code has syntax errors, asking Claude to fix...")
+                logger.warning(
+                    "Generated code has syntax errors, asking Claude to fix..."
+                )
                 scraper_code = await self._fix_syntax_errors(scraper_code)
                 syntax_valid = self._validate_syntax(scraper_code)
 
@@ -114,24 +120,26 @@ class CodeGeneratorAgent(BaseAgent):
                         test_data=test_data,
                         expected_schema={
                             "required_fields": ["success", "message"],
-                            "field_types": {"success": "bool", "message": "str"}
-                        }
+                            "field_types": {"success": "bool", "message": "str"},
+                        },
                     )
 
                     if validation_result.success:
                         validation_passed = True
-                        logger.info(f"   ✅ Validation passed on attempt {validation_attempts}")
+                        logger.info(
+                            f"   ✅ Validation passed on attempt {validation_attempts}"
+                        )
                         break
                     else:
-                        logger.warning(f"   ⚠️ Validation failed: {', '.join(validation_result.execution_errors)}")
+                        logger.warning(
+                            f"   ⚠️ Validation failed: {', '.join(validation_result.execution_errors)}"
+                        )
 
                         # Self-healing: Ask AI to fix the code
                         if attempt < 2:  # Don't heal on last attempt
                             logger.info(f"   🔧 Attempting self-healing...")
                             scraper_code = await self._heal_scraper(
-                                scraper_code,
-                                validation_result,
-                                schema_dict
+                                scraper_code, validation_result, schema_dict
                             )
 
                             # Re-validate syntax
@@ -163,7 +171,7 @@ class CodeGeneratorAgent(BaseAgent):
                 syntax_valid=syntax_valid,
                 validation_passed=validation_passed,
                 validation_attempts=validation_attempts,
-                test_results=test_results
+                test_results=test_results,
             )
 
             # Phase 6.5: Store pattern in library for future use
@@ -176,11 +184,13 @@ class CodeGeneratorAgent(BaseAgent):
                     generated_code=scraper_code,
                     confidence_score=confidence_score,
                     validation_attempts=validation_attempts,
-                    js_analysis=js_analysis
+                    js_analysis=js_analysis,
                 )
             else:
                 scraper_path = temp_path
-                logger.warning(f"   ⚠️ Validation failed, scraper saved to temp location only")
+                logger.warning(
+                    f"   ⚠️ Validation failed, scraper saved to temp location only"
+                )
 
             result = GeneratedScraper(
                 file_path=str(scraper_path),
@@ -192,14 +202,14 @@ class CodeGeneratorAgent(BaseAgent):
                 validation_passed=validation_passed,
                 validation_attempts=validation_attempts,
                 warnings=warnings,
-                confidence_score=confidence_score
+                confidence_score=confidence_score,
             )
 
             self._record_action(
                 action_type="code_generation",
                 description=f"Generated scraper for {municipality}",
                 result=str(scraper_path),
-                success=True
+                success=True,
             )
 
             logger.info(f"✅ [{self.name}] Scraper saved to {scraper_path}")
@@ -214,8 +224,8 @@ class CodeGeneratorAgent(BaseAgent):
                     "validation_passed": result.validation_passed,
                     "validation_attempts": result.validation_attempts,
                     "confidence_score": result.confidence_score,
-                    "warnings": result.warnings
-                }
+                    "warnings": result.warnings,
+                },
             }
 
         except Exception as e:
@@ -226,7 +236,7 @@ class CodeGeneratorAgent(BaseAgent):
         self,
         schema: Dict[str, Any],
         js_analysis: Dict[str, Any],
-        test_results: Dict[str, Any]
+        test_results: Dict[str, Any],
     ) -> str:
         """
         Generate scraper code using Claude Opus with pattern library assistance
@@ -241,18 +251,30 @@ class CodeGeneratorAgent(BaseAgent):
         similar_patterns_text = ""
         select2_code_example = ""
         if self.pattern_library:
-            similar_patterns = self.pattern_library.find_similar_patterns(schema, top_k=3)
+            similar_patterns = self.pattern_library.find_similar_patterns(
+                schema, top_k=3
+            )
 
             if similar_patterns:
-                logger.info(f"📚 Found {len(similar_patterns)} similar patterns in library")
+                logger.info(
+                    f"📚 Found {len(similar_patterns)} similar patterns in library"
+                )
 
                 similar_patterns_text = "\n**Similar Successful Patterns:**\n"
                 for i, pattern in enumerate(similar_patterns, 1):
                     similar_patterns_text += f"\n{i}. {pattern.municipality_name}:"
-                    similar_patterns_text += f"\n   - Field types: {', '.join(set(pattern.field_types))}"
-                    similar_patterns_text += f"\n   - JS complexity: {pattern.js_complexity}"
-                    similar_patterns_text += f"\n   - Success rate: {pattern.success_rate:.0%}"
-                    similar_patterns_text += f"\n   - Validation attempts: {pattern.validation_attempts}"
+                    similar_patterns_text += (
+                        f"\n   - Field types: {', '.join(set(pattern.field_types))}"
+                    )
+                    similar_patterns_text += (
+                        f"\n   - JS complexity: {pattern.js_complexity}"
+                    )
+                    similar_patterns_text += (
+                        f"\n   - Success rate: {pattern.success_rate:.0%}"
+                    )
+                    similar_patterns_text += (
+                        f"\n   - Validation attempts: {pattern.validation_attempts}"
+                    )
 
                     # Add code snippet recommendations
                     if pattern.code_snippets:
@@ -261,13 +283,24 @@ class CodeGeneratorAgent(BaseAgent):
                     # Check if this pattern has Select2 handling
                     if pattern.metadata:
                         import json as json_lib
+
                         try:
-                            metadata = json_lib.loads(pattern.metadata) if isinstance(pattern.metadata, str) else pattern.metadata
-                            if metadata.get('select2_detected') or metadata.get('jquery_required'):
-                                logger.info(f"   📦 Pattern {pattern.municipality_name} has Select2 handling!")
+                            metadata = (
+                                json_lib.loads(pattern.metadata)
+                                if isinstance(pattern.metadata, str)
+                                else pattern.metadata
+                            )
+                            if metadata.get("select2_detected") or metadata.get(
+                                "jquery_required"
+                            ):
+                                logger.info(
+                                    f"   📦 Pattern {pattern.municipality_name} has Select2 handling!"
+                                )
                                 # Extract Select2 method from stored code
-                                if 'select2' in pattern.code_snippets:
-                                    select2_code_example = pattern.code_snippets['select2']
+                                if "select2" in pattern.code_snippets:
+                                    select2_code_example = pattern.code_snippets[
+                                        "select2"
+                                    ]
                         except Exception as e:
                             logger.warning(f"Could not parse pattern metadata: {e}")
 
@@ -275,8 +308,10 @@ class CodeGeneratorAgent(BaseAgent):
 
         # Detect Select2 dropdowns in schema
         has_select2 = False
-        for field in schema.get('fields', []):
-            if 'select2' in field.get('class', '').lower() or field.get('select2', False):
+        for field in schema.get("fields", []):
+            if "select2" in field.get("class", "").lower() or field.get(
+                "select2", False
+            ):
                 has_select2 = True
                 break
 
@@ -315,8 +350,8 @@ IMPORTANT: Detect Select2 by checking if field class contains 'select2' or 'sele
 """
 
         # NEW: Extract API calls and event listeners
-        api_calls = js_analysis.get('api_calls', [])
-        event_listeners = schema.get('event_listeners', {})
+        api_calls = js_analysis.get("api_calls", [])
+        event_listeners = schema.get("event_listeners", {})
 
         # Build API-aware section
         api_section = ""
@@ -391,34 +426,66 @@ async def _fill_with_events(self, page, selector, value, listeners):
 ```
 """
 
-        # Get proven code templates based on detected UI framework
-        templates_section = ""
-        detected_framework = UIFramework.PLAIN_HTML
+        # Build VERIFIED DRIVERS section from schema
+        verified_drivers = ""
+        driver_methods = []
+        
+        # Collect unique interaction codes
+        seen_code = set()
+        for i, field in enumerate(schema.get("fields", [])):
+            code = field.get("interaction_code")
+            if code and code not in seen_code:
+                seen_code.add(code)
+                method_name = f"_fill_{field.get('name', f'field_{i}')}"
+                driver_methods.append(method_name)
+                
+                verified_drivers += f"""
+### Driver for {field.get('label')} ({field.get('name')})
+TYPE: {field.get('type')}
+SELECTOR: {field.get('selector')}
 
-        # Detect framework from schema
-        for field in schema.get('fields', []):
-            field_class = field.get('class', '').lower()
-            if 'ant-select' in field_class or 'ant-' in field_class:
-                detected_framework = UIFramework.ANT_DESIGN
-                break
-            elif 'select2' in field_class or field.get('select2', False):
+```python
+async def {method_name}(self, page, value):
+    try:
+{chr(10).join(['        ' + line for line in code.split(chr(10))])}
+    except Exception as e:
+        logger.error(f"Driver failed for {{value}}: {{e}}")
+        raise e
+```
+"""
+
+        if verified_drivers:
+            verified_drivers = f"""
+**✅ VERIFIED INTERACTION DRIVERS (Proven to work):**
+The following custom methods were auto-generated and verified during testing. 
+You MUST copy these methods into your class and use them to interact with the respective fields.
+Do NOT use generic select_option for these fields.
+
+{verified_drivers}
+"""
+        
+        # Detect UI framework from schema
+        detected_framework = UIFramework.PLAIN_HTML  # Default
+        for field in schema.get("fields", []):
+            if "select2" in field.get("class", "").lower() or field.get("dropdown_type") == "select2":
                 detected_framework = UIFramework.SELECT2
                 break
-
-        # Check URL for ASP.NET
-        if '.aspx' in url.lower() or any('ctl00' in f.get('selector', '') for f in schema.get('fields', [])):
-            detected_framework = UIFramework.ASP_NET_WEBFORMS
-
-        # Get templates for this framework
+            elif "ant-select" in field.get("class", "").lower() or field.get("dropdown_type") == "ant_design":
+                detected_framework = UIFramework.ANT_DESIGN
+                break
+            elif "MuiSelect" in field.get("class", "") or field.get("dropdown_type") == "material_ui":
+                detected_framework = UIFramework.MATERIAL_UI
+                break
+        
+        # Get generic templates (as fallback only)
         templates_section = get_template_code_for_prompt(detected_framework)
         if templates_section:
-            logger.info(f"📦 Using {detected_framework.value} code templates")
-        else:
-            logger.info(f"ℹ️ No templates for {detected_framework.value}, using generic patterns")
+             logger.info(f"📦 Using {detected_framework.value} code templates as fallback")
 
         # Build comprehensive prompt
         prompt = f"""You are an expert Python developer. Generate a production-ready web scraper class.
 
+{verified_drivers}
 {similar_patterns_text}
 {templates_section}
 {select2_warning}
@@ -519,7 +586,7 @@ DO NOT use page.select_option() for Select2 dropdowns - it will timeout!
             model=ai_client.models["powerful"],  # Opus for code generation
             messages=[{"role": "user", "content": prompt}],
             temperature=0.2,
-            max_tokens=16000  # Increased to handle complete scraper generation
+            max_tokens=16000,  # Increased to handle complete scraper generation
         )
         elapsed = time.time() - start_time
 
@@ -528,7 +595,7 @@ DO NOT use page.select_option() for Select2 dropdowns - it will timeout!
             model=ai_client.models["powerful"],
             input_tokens=usage.input_tokens,
             output_tokens=usage.output_tokens,
-            agent_name=self.name
+            agent_name=self.name,
         )
 
         self._record_action(
@@ -536,19 +603,20 @@ DO NOT use page.select_option() for Select2 dropdowns - it will timeout!
             description="Generated scraper code with Claude Opus",
             result=f"Generated {usage.output_tokens} tokens",
             success=True,
-            cost=cost
+            cost=cost,
         )
 
         # Extract code from markdown if present
         code = response.content[0].text
 
         import re
-        code_match = re.search(r'```python\s*(.*?)\s*```', code, re.DOTALL)
+
+        code_match = re.search(r"```python\s*(.*?)\s*```", code, re.DOTALL)
         if code_match:
             code = code_match.group(1)
         else:
             # Try without python keyword
-            code_match = re.search(r'```\s*(.*?)\s*```', code, re.DOTALL)
+            code_match = re.search(r"```\s*(.*?)\s*```", code, re.DOTALL)
             if code_match:
                 code = code_match.group(1)
 
@@ -608,7 +676,7 @@ Return ONLY the fixed Python code, no explanations.
             model=ai_client.models["balanced"],
             messages=[{"role": "user", "content": prompt}],
             temperature=0.1,
-            max_tokens=16000  # Increased to handle complete scraper generation
+            max_tokens=16000,  # Increased to handle complete scraper generation
         )
 
         usage = response.usage
@@ -616,20 +684,23 @@ Return ONLY the fixed Python code, no explanations.
             model=ai_client.models["balanced"],
             input_tokens=usage.input_tokens,
             output_tokens=usage.output_tokens,
-            agent_name=f"{self.name}_fix"
+            agent_name=f"{self.name}_fix",
         )
 
         fixed_code = response.content[0].text
 
         # Extract from markdown
         import re
-        code_match = re.search(r'```python\s*(.*?)\s*```', fixed_code, re.DOTALL)
+
+        code_match = re.search(r"```python\s*(.*?)\s*```", fixed_code, re.DOTALL)
         if code_match:
             return code_match.group(1)
 
         return fixed_code
 
-    async def _generate_test_code(self, schema: Dict[str, Any], scraper_code: str) -> str:
+    async def _generate_test_code(
+        self, schema: Dict[str, Any], scraper_code: str
+    ) -> str:
         """
         Use AI to generate pytest test code that matches the actual schema fields
         """
@@ -664,18 +735,19 @@ Generate ONLY the Python test code, no explanations."""
             model=ai_client.models["fast"],
             messages=[{"role": "user", "content": prompt}],
             temperature=0.2,
-            max_tokens=2000
+            max_tokens=2000,
         )
 
         test_code = response.content[0].text
 
         # Extract code from markdown if present
         import re
-        code_match = re.search(r'```python\s*(.*?)\s*```', test_code, re.DOTALL)
+
+        code_match = re.search(r"```python\s*(.*?)\s*```", test_code, re.DOTALL)
         if code_match:
             test_code = code_match.group(1)
         else:
-            code_match = re.search(r'```\s*(.*?)\s*```', test_code, re.DOTALL)
+            code_match = re.search(r"```\s*(.*?)\s*```", test_code, re.DOTALL)
             if code_match:
                 test_code = code_match.group(1)
 
@@ -685,7 +757,7 @@ Generate ONLY the Python test code, no explanations."""
         self,
         failed_code: str,
         validation_result: ValidationResult,
-        schema: Dict[str, Any]
+        schema: Dict[str, Any],
     ) -> str:
         """
         Use AI to fix failing scraper code
@@ -701,9 +773,9 @@ Generate ONLY the Python test code, no explanations."""
         logger.info(f"🔧 [{self.name}] Asking AI to heal failing code...")
 
         # Format error details
-        error_details = "\n".join([
-            f"- {err}" for err in validation_result.execution_errors[:5]
-        ])
+        error_details = "\n".join(
+            [f"- {err}" for err in validation_result.execution_errors[:5]]
+        )
 
         # Build healing prompt
         prompt = HEALING_PROMPT_TEMPLATE.format(
@@ -716,7 +788,7 @@ Generate ONLY the Python test code, no explanations."""
             execution_errors=", ".join(validation_result.execution_errors[:3]),
             schema_errors=", ".join(validation_result.schema_errors[:3]),
             timeout_issues=", ".join(validation_result.timeout_issues[:3]),
-            screenshot_path=validation_result.screenshot_path or "None"
+            screenshot_path=validation_result.screenshot_path or "None",
         )
 
         start_time = time.time()
@@ -724,7 +796,7 @@ Generate ONLY the Python test code, no explanations."""
             model=ai_client.models["balanced"],  # Sonnet for healing
             messages=[{"role": "user", "content": prompt}],
             temperature=0.2,
-            max_tokens=16000  # Increased to handle complete scraper generation
+            max_tokens=16000,  # Increased to handle complete scraper generation
         )
         elapsed = time.time() - start_time
 
@@ -733,7 +805,7 @@ Generate ONLY the Python test code, no explanations."""
             model=ai_client.models["balanced"],
             input_tokens=usage.input_tokens,
             output_tokens=usage.output_tokens,
-            agent_name=f"{self.name}_healing"
+            agent_name=f"{self.name}_healing",
         )
 
         self._record_action(
@@ -741,18 +813,19 @@ Generate ONLY the Python test code, no explanations."""
             description="Attempted to fix failing scraper",
             result=f"Generated {usage.output_tokens} tokens",
             success=True,
-            cost=cost
+            cost=cost,
         )
 
         # Extract code from response
         healed_code = response.content[0].text
 
         import re
-        code_match = re.search(r'```python\s*(.*?)\s*```', healed_code, re.DOTALL)
+
+        code_match = re.search(r"```python\s*(.*?)\s*```", healed_code, re.DOTALL)
         if code_match:
             healed_code = code_match.group(1)
         else:
-            code_match = re.search(r'```\s*(.*?)\s*```', healed_code, re.DOTALL)
+            code_match = re.search(r"```\s*(.*?)\s*```", healed_code, re.DOTALL)
             if code_match:
                 healed_code = code_match.group(1)
 
@@ -795,7 +868,9 @@ Generate ONLY the Python test code, no explanations."""
                     test_data[field_name] = "Option1"
 
             elif field_type == "textarea":
-                test_data[field_name] = "This is a test complaint message for automated testing purposes."
+                test_data[field_name] = (
+                    "This is a test complaint message for automated testing purposes."
+                )
 
             elif field_type == "checkbox":
                 test_data[field_name] = True
@@ -811,7 +886,7 @@ Generate ONLY the Python test code, no explanations."""
         syntax_valid: bool,
         validation_passed: bool,
         validation_attempts: int,
-        test_results: Dict[str, Any]
+        test_results: Dict[str, Any],
     ) -> float:
         """
         Calculate confidence score for generated scraper
@@ -853,11 +928,7 @@ Generate ONLY the Python test code, no explanations."""
         return round(confidence, 2)
 
     async def _save_scraper(
-        self,
-        municipality: str,
-        scraper_code: str,
-        test_code: str,
-        temp: bool = False
+        self, municipality: str, scraper_code: str, test_code: str, temp: bool = False
     ) -> Path:
         """
         Save scraper and test code to files
@@ -904,7 +975,8 @@ Generate ONLY the Python test code, no explanations."""
         Extract class name from generated code
         """
         import re
-        match = re.search(r'class\s+(\w+)', code)
+
+        match = re.search(r"class\s+(\w+)", code)
         if match:
             return match.group(1)
         return "UnknownScraper"
@@ -918,6 +990,7 @@ Generate ONLY the Python test code, no explanations."""
         try:
             # Try to import the scraper
             import importlib.util
+
             spec = importlib.util.spec_from_file_location("test_scraper", scraper_path)
             module = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(module)
@@ -954,7 +1027,7 @@ async def test_code_generator():
                 "label": "Mobile No",
                 "type": "text",
                 "selector": "#mobile",
-                "required": True
+                "required": True,
             },
             {
                 "name": "select_type",
@@ -962,31 +1035,36 @@ async def test_code_generator():
                 "type": "dropdown",
                 "selector": "#selectType",
                 "required": True,
-                "options": ["Electrical", "Water", "Roads"]
-            }
+                "options": ["Electrical", "Water", "Roads"],
+            },
         ],
-        "submit_button": {"selector": "button[type='submit']", "text": "Register Complaint"}
+        "submit_button": {
+            "selector": "button[type='submit']",
+            "text": "Register Complaint",
+        },
     }
 
     mock_js_analysis = {
         "submission_method": "ajax_xhr",
         "endpoint": "/Portal/Ajax/RegisterComplaint",
-        "requires_browser": True
+        "requires_browser": True,
     }
 
     mock_test_results = {
         "total_tests": 5,
         "passed": 4,
         "failed": 1,
-        "confidence_score": 0.8
+        "confidence_score": 0.8,
     }
 
     agent = CodeGeneratorAgent()
-    result = await agent.execute({
-        "schema": mock_schema,
-        "js_analysis": mock_js_analysis,
-        "test_results": mock_test_results
-    })
+    result = await agent.execute(
+        {
+            "schema": mock_schema,
+            "js_analysis": mock_js_analysis,
+            "test_results": mock_test_results,
+        }
+    )
 
     print(json.dumps(result, indent=2, default=str))
 

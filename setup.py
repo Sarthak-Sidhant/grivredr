@@ -1,0 +1,76 @@
+"""
+Setup configuration for Grivredr package
+"""
+
+from setuptools import setup, find_packages
+
+setup(
+    name="grivredr",
+    version="1.0.0",
+    author="Grivredr Team",
+    description="AI-powered web scraper generator for government grievance portals",
+    long_description="AI-powered web scraper generator for government grievance portals",
+    long_description_content_type="text/plain",
+    url="https://github.com/yourusername/grivredr",
+    packages=find_packages(),
+    classifiers=[
+        "Development Status :: 4 - Beta",
+        "Intended Audience :: Developers",
+        "Topic :: Internet :: WWW/HTTP :: Browsers",
+        "Topic :: Software Development :: Libraries :: Python Modules",
+        "License :: OSI Approved :: MIT License",
+        "Programming Language :: Python :: 3",
+        "Programming Language :: Python :: 3.11",
+        "Programming Language :: Python :: 3.12",
+        "Programming Language :: Python :: 3.13",
+    ],
+    python_requires=">=3.11",
+    install_requires=[
+        "fastapi>=0.109.0",
+        "uvicorn>=0.27.0",
+        "flask>=3.0.0",
+        "flask-socketio>=5.3.6",
+        "python-socketio>=5.11.0",
+        "playwright>=1.57.0",
+        "playwright-stealth>=1.0.5",
+        "browser-use>=0.1.14",
+        "anthropic>=0.39.0",
+        "openai>=1.57.0",
+        "google-generativeai>=0.3.0",
+        "langchain>=0.3.14",
+        "langchain-anthropic>=0.3.3",
+        "langchain-community>=0.3.14",
+        "langsmith>=0.2.10",
+        "beautifulsoup4>=4.12.3",
+        "lxml>=5.2.0",
+        "python-dotenv>=1.0.1",
+        "pydantic>=2.6.0",
+        "pydantic-settings>=2.1.0",
+        "aiofiles>=23.2.1",
+        "httpx>=0.26.0",
+        "sqlalchemy>=2.0.25",
+        "pillow>=10.3.0",
+        "jinja2>=3.1.3",
+        "python-multipart>=0.0.6",
+        "loguru>=0.7.2",
+        "rich>=13.7.0",
+    ],
+    extras_require={
+        "dev": [
+            "pytest>=7.4.4",
+            "pytest-asyncio>=0.23.3",
+            "pytest-cov>=4.1.0",
+            "black>=24.1.1",
+            "flake8>=7.0.0",
+            "mypy>=1.0.0",
+        ],
+    },
+    entry_points={
+        "console_scripts": [
+            "grivredr=cli.main:main",
+            "grivredr-tui=cli.tui:main",
+        ],
+    },
+    include_package_data=True,
+    zip_safe=False,
+)

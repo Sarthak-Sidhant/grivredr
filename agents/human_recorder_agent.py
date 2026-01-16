@@ -3,6 +3,7 @@ Human-in-the-Loop Recorder Agent
 Records human interactions with forms to generate perfect scrapers
 No AI guessing - just records what you actually do!
 """
+
 import asyncio
 import json
 import logging
@@ -20,6 +21,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class RecordedAction:
     """Single recorded action"""
+
     action_type: str  # navigate, click, fill, select, wait, submit
     timestamp: float
     selector: Optional[str] = None
@@ -31,6 +33,7 @@ class RecordedAction:
 @dataclass
 class RecordingSession:
     """Complete recording session"""
+
     url: str
     municipality: str
     start_time: float
@@ -55,7 +58,13 @@ class HumanRecorderAgent:
     4. Generates scraper from recorded actions
     """
 
-    def __init__(self, headless: bool = False, auto_stop: bool = False, capture_screenshots: bool = True, browser_type: str = "firefox"):
+    def __init__(
+        self,
+        headless: bool = False,
+        auto_stop: bool = False,
+        capture_screenshots: bool = True,
+        browser_type: str = "firefox",
+    ):
         self.headless = headless
         self.auto_stop = auto_stop
         self.capture_screenshots = capture_screenshots
@@ -81,9 +90,7 @@ class HumanRecorderAgent:
         logger.info(f"📍 URL: {url}")
 
         self.recording_session = RecordingSession(
-            url=url,
-            municipality=municipality,
-            start_time=datetime.now().timestamp()
+            url=url, municipality=municipality, start_time=datetime.now().timestamp()
         )
 
         # Set up signal handler to save on exit
@@ -106,10 +113,10 @@ class HumanRecorderAgent:
             browser_launcher = self.playwright.webkit
         else:
             browser_launcher = self.playwright.chromium
-        
+
         self.browser = await browser_launcher.launch(
             headless=self.headless,
-            args=['--no-sandbox'] if self.browser_type == "chromium" else []
+            args=["--no-sandbox"] if self.browser_type == "chromium" else [],
         )
 
         context = await self.browser.new_context(
@@ -119,46 +126,62 @@ class HumanRecorderAgent:
 
         # Capture ALL network requests and extract dropdown selections from POST data
         async def log_request(request):
-            self.network_logs.append({
-                'timestamp': datetime.now().timestamp(),
-                'method': request.method,
-                'url': request.url,
-                'post_data': request.post_data if request.method == 'POST' else None
-            })
+            self.network_logs.append(
+                {
+                    "timestamp": datetime.now().timestamp(),
+                    "method": request.method,
+                    "url": request.url,
+                    "post_data": (
+                        request.post_data if request.method == "POST" else None
+                    ),
+                }
+            )
             logger.info(f"🌐 Network: {request.method} {request.url[:80]}")
 
             # CRITICAL: Extract dropdown selection from ASP.NET postback data
-            if request.method == 'POST' and request.post_data:
+            if request.method == "POST" and request.post_data:
                 try:
                     post_data = request.post_data
                     # Check if this is a dropdown postback
-                    if '__EVENTTARGET' in post_data and 'ddl' in post_data.lower():
+                    if "__EVENTTARGET" in post_data and "ddl" in post_data.lower():
                         import re
+
                         # Extract the dropdown ID from __EVENTTARGET
-                        target_match = re.search(r'name="__EVENTTARGET"\s*\n\s*(.+?)\s*\n', post_data)
+                        target_match = re.search(
+                            r'name="__EVENTTARGET"\s*\n\s*(.+?)\s*\n', post_data
+                        )
                         if target_match:
                             dropdown_id = target_match.group(1).strip()
                             logger.info(f"🔍 Dropdown postback detected: {dropdown_id}")
 
                             # Find the selected value for this dropdown
                             # Format: Content-Disposition: form-data; name="ctl00$ContentPlaceHolder1$ddlProblem"\n\n123\n
-                            value_pattern = rf'name="{re.escape(dropdown_id)}"\s*\n\s*(.+?)\s*\n'
+                            value_pattern = (
+                                rf'name="{re.escape(dropdown_id)}"\s*\n\s*(.+?)\s*\n'
+                            )
                             value_match = re.search(value_pattern, post_data)
                             if value_match:
                                 selected_value = value_match.group(1).strip()
-                                logger.info(f"✅ DROPDOWN CAPTURED: {dropdown_id} = '{selected_value}'")
+                                logger.info(
+                                    f"✅ DROPDOWN CAPTURED: {dropdown_id} = '{selected_value}'"
+                                )
 
                                 # Create a select action from POST data
                                 action_data = {
-                                    'type': 'select',
-                                    'timestamp': datetime.now().timestamp() * 1000,
-                                    'selector': f'#{dropdown_id.replace("$", "_")}',
-                                    'value': selected_value,
-                                    'elementInfo': {'name': dropdown_id, 'id': dropdown_id}
+                                    "type": "select",
+                                    "timestamp": datetime.now().timestamp() * 1000,
+                                    "selector": f'#{dropdown_id.replace("$", "_")}',
+                                    "value": selected_value,
+                                    "elementInfo": {
+                                        "name": dropdown_id,
+                                        "id": dropdown_id,
+                                    },
                                 }
                                 self.captured_actions.append(action_data)
                             else:
-                                logger.warning(f"⚠️  Could not find value for {dropdown_id} in POST data")
+                                logger.warning(
+                                    f"⚠️  Could not find value for {dropdown_id} in POST data"
+                                )
                 except Exception as e:
                     logger.warning(f"Error parsing POST data: {e}")
 
@@ -188,7 +211,8 @@ class HumanRecorderAgent:
         await self._inject_recorder(page)
 
         # Add visual indicator that changes when recorder is ready
-        await page.evaluate("""
+        await page.evaluate(
+            """
             () => {
                 const banner = document.createElement('div');
                 banner.id = 'recording-banner';
@@ -220,7 +244,8 @@ class HumanRecorderAgent:
                     }, 2000);
                 }, 1000);
             }
-        """)
+        """
+        )
 
         logger.info("=" * 80)
         logger.info("🎬 RECORDING ACTIVE!")
@@ -231,12 +256,16 @@ class HumanRecorderAgent:
         logger.info("  1. ⏳ WAIT for the banner to turn GREEN (says 'RECORDER READY')")
         logger.info("  2. ⏳ WAIT 2 more seconds after it turns green")
         logger.info("  3. ✅ NOW you can start filling the form")
-        logger.info("  4. 📋 Select dropdowns SLOWLY (wait 1 second after each selection)")
+        logger.info(
+            "  4. 📋 Select dropdowns SLOWLY (wait 1 second after each selection)"
+        )
         logger.info("  5. 📝 Fill all text fields")
         logger.info("  6. 🖱️  Click submit button")
         logger.info("  7. ⏹️  Press Ctrl+C here when done")
         logger.info("")
-        logger.info("⚠️  IMPORTANT: If you select dropdowns TOO FAST, they won't be captured!")
+        logger.info(
+            "⚠️  IMPORTANT: If you select dropdowns TOO FAST, they won't be captured!"
+        )
         logger.info("")
         logger.info("The system is recording:")
         logger.info("  ✓ Every dropdown selection (if you wait for recorder)")
@@ -261,7 +290,8 @@ class HumanRecorderAgent:
                 try:
                     # IMMEDIATELY check localStorage after any navigation
                     # This runs EVERY second to catch actions before they're lost
-                    actions = await page.evaluate("""
+                    actions = await page.evaluate(
+                        """
                         () => {
                             // ALWAYS read from localStorage first (survives postbacks)
                             try {
@@ -276,10 +306,14 @@ class HumanRecorderAgent:
                             }
                             return window._recordedActions || [];
                         }
-                    """)
+                    """
+                    )
                 except Exception as e:
                     # Page navigated - re-inject recorder
-                    if "Execution context was destroyed" in str(e) or "navigation" in str(e).lower():
+                    if (
+                        "Execution context was destroyed" in str(e)
+                        or "navigation" in str(e).lower()
+                    ):
                         logger.info("🔄 Page navigated, re-injecting recorder...")
                         await asyncio.sleep(1)
                         try:
@@ -294,16 +328,17 @@ class HumanRecorderAgent:
                     # Process new actions
                     for action_data in actions:
                         action = RecordedAction(
-                            action_type=action_data.get('type'),
-                            timestamp=action_data.get('timestamp'),
-                            selector=action_data.get('selector'),
-                            value=action_data.get('value'),
-                            element_info=action_data.get('elementInfo')
+                            action_type=action_data.get("type"),
+                            timestamp=action_data.get("timestamp"),
+                            selector=action_data.get("selector"),
+                            value=action_data.get("value"),
+                            element_info=action_data.get("elementInfo"),
                         )
 
                         # Check if action already recorded (use both timestamp AND selector to avoid duplicates)
                         already_recorded = any(
-                            a.timestamp == action.timestamp and a.selector == action.selector
+                            a.timestamp == action.timestamp
+                            and a.selector == action.selector
                             for a in self.recording_session.actions
                         )
 
@@ -314,23 +349,40 @@ class HumanRecorderAgent:
                             self.captured_actions.append(action_data)
 
                             # Take screenshot for significant actions (not every keystroke)
-                            if self.capture_screenshots and action.action_type in ['select', 'click', 'submit']:
-                                screenshot_path = self.screenshots_dir / f"{municipality}_action_{self.action_count:03d}_{action.action_type}.png"
-                                await page.screenshot(path=str(screenshot_path), full_page=False)
+                            if self.capture_screenshots and action.action_type in [
+                                "select",
+                                "click",
+                                "submit",
+                            ]:
+                                screenshot_path = (
+                                    self.screenshots_dir
+                                    / f"{municipality}_action_{self.action_count:03d}_{action.action_type}.png"
+                                )
+                                await page.screenshot(
+                                    path=str(screenshot_path), full_page=False
+                                )
                                 action.screenshot = str(screenshot_path)
                                 logger.info(f"📸 Screenshot: {screenshot_path.name}")
 
                             self.recording_session.actions.append(action)
 
                             # Get human-readable description
-                            field_label = action.element_info.get('placeholder', '') or action.element_info.get('name', '')
-                            if action.action_type == 'fill':
-                                logger.info(f"📝 [{self.action_count}] Typed in '{field_label}': {action.value}")
-                            elif action.action_type == 'select':
-                                logger.info(f"✅ [{self.action_count}] DROPDOWN SELECTED: '{action.value}' in '{field_label}'")
-                            elif action.action_type == 'click':
-                                logger.info(f"🖱️  [{self.action_count}] Clicked: {action.value or field_label}")
-                            elif action.action_type == 'submit':
+                            field_label = action.element_info.get(
+                                "placeholder", ""
+                            ) or action.element_info.get("name", "")
+                            if action.action_type == "fill":
+                                logger.info(
+                                    f"📝 [{self.action_count}] Typed in '{field_label}': {action.value}"
+                                )
+                            elif action.action_type == "select":
+                                logger.info(
+                                    f"✅ [{self.action_count}] DROPDOWN SELECTED: '{action.value}' in '{field_label}'"
+                                )
+                            elif action.action_type == "click":
+                                logger.info(
+                                    f"🖱️  [{self.action_count}] Clicked: {action.value or field_label}"
+                                )
+                            elif action.action_type == "submit":
                                 logger.info(f"📤 [{self.action_count}] Form submitted")
 
                     # Don't clear buffer anymore - we want to accumulate actions
@@ -343,11 +395,15 @@ class HumanRecorderAgent:
 
                 # Check if form was submitted (look for success indicators)
                 # Only check if we have at least one submit/click action
-                has_submit = any(a.action_type in ['submit', 'click'] for a in self.recording_session.actions)
+                has_submit = any(
+                    a.action_type in ["submit", "click"]
+                    for a in self.recording_session.actions
+                )
 
                 success_detected = False
                 if has_submit:
-                    success_detected = await page.evaluate("""
+                    success_detected = await page.evaluate(
+                        """
                         () => {
                             // Look for very specific success patterns
                             const body = document.body;
@@ -369,8 +425,8 @@ class HumanRecorderAgent:
                             }
 
                             // Look for tracking/complaint ID patterns
-                            const hasTrackingId = /complaint\s*(?:id|number).*?[A-Z0-9]{5,}/i.test(text) ||
-                                                 /tracking\s*(?:id|number).*?[A-Z0-9]{5,}/i.test(text);
+                            const hasTrackingId = /complaint\\s*(?:id|number).*?[A-Z0-9]{5,}/i.test(text) ||
+                                                 /tracking\\s*(?:id|number).*?[A-Z0-9]{5,}/i.test(text);
 
                             if (hasTrackingId) {
                                 return true;
@@ -387,9 +443,14 @@ class HumanRecorderAgent:
 
                             return false;
                         }
-                    """)
+                    """
+                    )
 
-                if self.auto_stop and success_detected and len(self.recording_session.actions) > 5:
+                if (
+                    self.auto_stop
+                    and success_detected
+                    and len(self.recording_session.actions) > 5
+                ):
                     logger.info("✅ Success detected! Finishing recording...")
 
                     # Try to extract tracking ID
@@ -399,7 +460,10 @@ class HumanRecorderAgent:
                         logger.info(f"🎫 Tracking ID: {tracking_id}")
 
                     # Take final screenshot
-                    screenshot_path = self.screenshots_dir / f"{municipality}_success_{int(datetime.now().timestamp())}.png"
+                    screenshot_path = (
+                        self.screenshots_dir
+                        / f"{municipality}_success_{int(datetime.now().timestamp())}.png"
+                    )
                     await page.screenshot(path=str(screenshot_path), full_page=True)
                     logger.info(f"📸 Success screenshot: {screenshot_path}")
 
@@ -422,10 +486,10 @@ class HumanRecorderAgent:
         await self.playwright.stop()
 
         return {
-            'success': True,
-            'recording_file': str(recording_file),
-            'actions_count': len(self.recording_session.actions),
-            'tracking_id': self.recording_session.tracking_id
+            "success": True,
+            "recording_file": str(recording_file),
+            "actions_count": len(self.recording_session.actions),
+            "tracking_id": self.recording_session.tracking_id,
         }
 
     def _save_recording_sync(self, municipality: str, url: str) -> Path:
@@ -441,14 +505,16 @@ class HumanRecorderAgent:
 
         # If recording_session is empty but we have captured_actions, restore them
         if len(self.recording_session.actions) == 0 and len(self.captured_actions) > 0:
-            logger.info(f"📦 Restoring {len(self.captured_actions)} actions from Python buffer")
+            logger.info(
+                f"📦 Restoring {len(self.captured_actions)} actions from Python buffer"
+            )
             for action_data in self.captured_actions:
                 action = RecordedAction(
-                    action_type=action_data.get('type'),
-                    timestamp=action_data.get('timestamp'),
-                    selector=action_data.get('selector'),
-                    value=action_data.get('value'),
-                    element_info=action_data.get('elementInfo')
+                    action_type=action_data.get("type"),
+                    timestamp=action_data.get("timestamp"),
+                    selector=action_data.get("selector"),
+                    value=action_data.get("value"),
+                    element_info=action_data.get("elementInfo"),
                 )
                 self.recording_session.actions.append(action)
 
@@ -456,41 +522,54 @@ class HumanRecorderAgent:
         if not self.recording_session.end_time:
             self.recording_session.end_time = datetime.now().timestamp()
 
-        recording_file = self.recordings_dir / f"{municipality}_{int(self.recording_session.start_time)}.json"
+        recording_file = (
+            self.recordings_dir
+            / f"{municipality}_{int(self.recording_session.start_time)}.json"
+        )
 
         # Extract dropdown options before saving
         logger.info(f"📋 Extracting dropdown options for future use...")
         dropdown_options = {}
         try:
-            dropdown_options = asyncio.run(self._extract_dropdown_options_from_recording(
-                self.recording_session.url,
-                self.recording_session.actions
-            ))
+            dropdown_options = asyncio.run(
+                self._extract_dropdown_options_from_recording(
+                    self.recording_session.url, self.recording_session.actions
+                )
+            )
         except Exception as e:
             logger.warning(f"Could not extract dropdown options: {e}")
 
-        with open(recording_file, 'w') as f:
-            json.dump({
-                'url': self.recording_session.url,
-                'municipality': self.recording_session.municipality,
-                'start_time': self.recording_session.start_time,
-                'end_time': self.recording_session.end_time,
-                'actions': [asdict(a) for a in self.recording_session.actions],
-                'tracking_id': self.recording_session.tracking_id,
-                'claude_notes': self.claude_notes,
-                'total_actions': self.action_count,
-                'network_logs': self.network_logs,  # Include network activity
-                'dropdown_options': dropdown_options  # Include dropdown options
-            }, f, indent=2)
+        with open(recording_file, "w") as f:
+            json.dump(
+                {
+                    "url": self.recording_session.url,
+                    "municipality": self.recording_session.municipality,
+                    "start_time": self.recording_session.start_time,
+                    "end_time": self.recording_session.end_time,
+                    "actions": [asdict(a) for a in self.recording_session.actions],
+                    "tracking_id": self.recording_session.tracking_id,
+                    "claude_notes": self.claude_notes,
+                    "total_actions": self.action_count,
+                    "network_logs": self.network_logs,  # Include network activity
+                    "dropdown_options": dropdown_options,  # Include dropdown options
+                },
+                f,
+                indent=2,
+            )
 
         # Also save a human-readable summary
-        summary_file = self.recordings_dir / f"{municipality}_{int(self.recording_session.start_time)}_NOTES.md"
-        with open(summary_file, 'w') as f:
+        summary_file = (
+            self.recordings_dir
+            / f"{municipality}_{int(self.recording_session.start_time)}_NOTES.md"
+        )
+        with open(summary_file, "w") as f:
             f.write(f"# Recording Session Summary\n\n")
             f.write(f"**Municipality:** {municipality}\n")
             f.write(f"**URL:** {url}\n")
             f.write(f"**Total Actions:** {self.action_count}\n")
-            f.write(f"**Duration:** {self.recording_session.end_time - self.recording_session.start_time:.1f}s\n\n")
+            f.write(
+                f"**Duration:** {self.recording_session.end_time - self.recording_session.start_time:.1f}s\n\n"
+            )
 
             if self.claude_notes:
                 f.write(f"## Claude's Observations\n\n")
@@ -500,7 +579,11 @@ class HumanRecorderAgent:
 
             f.write(f"## Actions Recorded\n\n")
             for i, action in enumerate(self.recording_session.actions, 1):
-                field_name = action.element_info.get('name', 'unknown') if action.element_info else 'unknown'
+                field_name = (
+                    action.element_info.get("name", "unknown")
+                    if action.element_info
+                    else "unknown"
+                )
                 f.write(f"{i}. **{action.action_type}** - {field_name}")
                 if action.value:
                     f.write(f" = `{action.value}`")
@@ -513,7 +596,8 @@ class HumanRecorderAgent:
 
     async def _inject_recorder(self, page: Page):
         """Inject JavaScript to record user interactions"""
-        await page.evaluate("""
+        await page.evaluate(
+            """
             () => {
                 // Initialize recording array
                 window._recordedActions = [];
@@ -704,7 +788,8 @@ class HumanRecorderAgent:
 
                 console.log('🎬 Recording script injected successfully!');
             }
-        """)
+        """
+        )
 
         logger.info("✅ Recording script injected")
 
@@ -712,19 +797,25 @@ class HumanRecorderAgent:
         """Use Claude to analyze what the user is doing"""
         try:
             # Take a quick screenshot
-            screenshot_path = self.screenshots_dir / f"{municipality}_analysis_{int(datetime.now().timestamp())}.png"
+            screenshot_path = (
+                self.screenshots_dir
+                / f"{municipality}_analysis_{int(datetime.now().timestamp())}.png"
+            )
             await page.screenshot(path=str(screenshot_path))
 
             # Get recent actions summary
             recent_actions = self.recording_session.actions[-5:]
-            actions_summary = "\n".join([
-                f"- {a.action_type}: {a.element_info.get('name', 'unknown')} = {a.value}"
-                for a in recent_actions
-            ])
+            actions_summary = "\n".join(
+                [
+                    f"- {a.action_type}: {a.element_info.get('name', 'unknown')} = {a.value}"
+                    for a in recent_actions
+                ]
+            )
 
             # Prepare screenshot for Claude
             import base64
-            with open(screenshot_path, 'rb') as f:
+
+            with open(screenshot_path, "rb") as f:
                 screenshot_base64 = base64.b64encode(f.read()).decode()
 
             # Ask Claude what's happening
@@ -732,20 +823,21 @@ class HumanRecorderAgent:
 
             response = ai_client.client.messages.create(
                 model=ai_client.models["fast"],  # Use Haiku for speed
-                messages=[{
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "image",
-                        "source": {
-                            "type": "base64",
-                            "media_type": "image/png",
-                            "data": screenshot_base64
-                            }
-                        },
-                        {
-                            "type": "text",
-                            "text": f"""Analyze this grievance form submission in progress.
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "image",
+                                "source": {
+                                    "type": "base64",
+                                    "media_type": "image/png",
+                                    "data": screenshot_base64,
+                                },
+                            },
+                            {
+                                "type": "text",
+                                "text": f"""Analyze this grievance form submission in progress.
 
 Recent actions by human:
 {actions_summary}
@@ -755,21 +847,24 @@ Provide a brief 1-2 sentence summary of:
 2. What type of information is being entered
 3. Any observations about the form structure
 
-Be concise and helpful."""
-                        }
-                    ]
-                }],
+Be concise and helpful.""",
+                            },
+                        ],
+                    }
+                ],
                 temperature=0.3,
-                max_tokens=200
+                max_tokens=200,
             )
 
             note = response.content[0].text
-            self.claude_notes.append({
-                'timestamp': datetime.now().timestamp(),
-                'action_count': self.action_count,
-                'note': note,
-                'screenshot': str(screenshot_path)
-            })
+            self.claude_notes.append(
+                {
+                    "timestamp": datetime.now().timestamp(),
+                    "action_count": self.action_count,
+                    "note": note,
+                    "screenshot": str(screenshot_path),
+                }
+            )
 
             logger.info("=" * 60)
             logger.info(f"🤖 Claude's Analysis (after {self.action_count} actions):")
@@ -787,10 +882,10 @@ Be concise and helpful."""
 
         # Common patterns for tracking IDs
         patterns = [
-            r'complaint\s*(?:id|number|no\.?)\s*:?\s*([A-Z0-9-]+)',
-            r'tracking\s*(?:id|number|no\.?)\s*:?\s*([A-Z0-9-]+)',
-            r'reference\s*(?:id|number|no\.?)\s*:?\s*([A-Z0-9-]+)',
-            r'([A-Z]{2,5}\d{5,10})',
+            r"complaint\s*(?:id|number|no\.?)\s*:?\s*([A-Z0-9-]+)",
+            r"tracking\s*(?:id|number|no\.?)\s*:?\s*([A-Z0-9-]+)",
+            r"reference\s*(?:id|number|no\.?)\s*:?\s*([A-Z0-9-]+)",
+            r"([A-Z]{2,5}\d{5,10})",
         ]
 
         for pattern in patterns:
@@ -804,7 +899,7 @@ Be concise and helpful."""
         self,
         recording_file: str,
         output_dir: Optional[str] = None,
-        extract_dropdown_options: bool = True
+        extract_dropdown_options: bool = True,
     ) -> str:
         """
         Generate a working scraper from recorded actions
@@ -813,25 +908,29 @@ Be concise and helpful."""
         logger.info(f"🔧 Generating scraper from recording: {recording_file}")
 
         # Load recording
-        with open(recording_file, 'r') as f:
+        with open(recording_file, "r") as f:
             recording_data = json.load(f)
 
-        municipality = recording_data['municipality']
-        url = recording_data['url']
-        actions = recording_data['actions']
+        municipality = recording_data["municipality"]
+        url = recording_data["url"]
+        actions = recording_data["actions"]
 
         if output_dir is None:
-            output_dir = f"outputs/generated_scrapers/{municipality}"
+            output_dir = f"scrapers/{municipality}"
 
         output_path = Path(output_dir)
         output_path.mkdir(parents=True, exist_ok=True)
 
         # Use saved dropdown options if available, otherwise extract them
-        dropdown_options_map = recording_data.get('dropdown_options', {})
+        dropdown_options_map = recording_data.get("dropdown_options", {})
 
         if not dropdown_options_map and extract_dropdown_options:
-            logger.info(f"📋 No saved options found. Extracting dropdown options from form...")
-            dropdown_options_map = asyncio.run(self._extract_dropdown_options(url, actions))
+            logger.info(
+                f"📋 No saved options found. Extracting dropdown options from form..."
+            )
+            dropdown_options_map = asyncio.run(
+                self._extract_dropdown_options(url, actions)
+            )
         elif dropdown_options_map:
             logger.info(f"✅ Using saved dropdown options from recording")
 
@@ -840,17 +939,21 @@ Be concise and helpful."""
             self._save_to_knowledge_base(municipality, url, dropdown_options_map)
 
         # Generate scraper code
-        scraper_code = self._generate_scraper_code(municipality, url, actions, dropdown_options_map)
+        scraper_code = self._generate_scraper_code(
+            municipality, url, actions, dropdown_options_map
+        )
 
         scraper_file = output_path / f"{municipality}_scraper.py"
-        with open(scraper_file, 'w') as f:
+        with open(scraper_file, "w") as f:
             f.write(scraper_code)
 
         logger.info(f"✅ Scraper generated: {scraper_file}")
 
         return str(scraper_file)
 
-    def _save_to_knowledge_base(self, municipality: str, url: str, dropdown_options: Dict[str, List[Dict]]):
+    def _save_to_knowledge_base(
+        self, municipality: str, url: str, dropdown_options: Dict[str, List[Dict]]
+    ):
         """Save dropdown options to knowledge base for NLP queries"""
         from utils.field_query import FieldQueryEngine
 
@@ -869,71 +972,77 @@ Be concise and helpful."""
 
         for selector, options in dropdown_options.items():
             # Extract field name from selector
-            field_name = selector.split('_')[-1].lower()
-            if 'ddl' in selector.lower():
-                field_name = selector.split('ddl')[-1].lower()
+            field_name = selector.split("_")[-1].lower()
+            if "ddl" in selector.lower():
+                field_name = selector.split("ddl")[-1].lower()
 
             # Clean field name
-            field_name = field_name.replace('$', '').replace('_', '')
+            field_name = field_name.replace("$", "").replace("_", "")
 
             # Build searchable index
             searchable_values = {}
             for opt in options:
-                value = opt['value']
-                text = opt['text']
+                value = opt["value"]
+                text = opt["text"]
 
-                if value and text and value != '0':  # Skip empty/default options
+                if value and text and value != "0":  # Skip empty/default options
                     # Add original text (lowercase)
                     text_lower = text.lower().strip()
                     searchable_values[text_lower] = value
 
                     # Add simplified versions for better matching
                     # Remove special chars and extra spaces
-                    simplified = re.sub(r'[^\w\s]', ' ', text_lower)
-                    simplified = re.sub(r'\s+', ' ', simplified).strip()
+                    simplified = re.sub(r"[^\w\s]", " ", text_lower)
+                    simplified = re.sub(r"\s+", " ", simplified).strip()
                     if simplified != text_lower:
                         searchable_values[simplified] = value
 
             field_mappings[field_name] = {
-                "field_id": selector.replace('#', '').replace('_', '$'),
+                "field_id": selector.replace("#", "").replace("_", "$"),
                 "selector": selector,
-                "label": field_name.replace('_', ' ').title(),
+                "label": field_name.replace("_", " ").title(),
                 "type": "select",
                 "required": True,
-                "searchable_values": searchable_values
+                "searchable_values": searchable_values,
             }
 
         # Save to knowledge base
         knowledge_data = {
             "municipality": municipality,
             "url": url,
-            "field_mappings": field_mappings
+            "field_mappings": field_mappings,
         }
 
-        with open(knowledge_file, 'w') as f:
+        with open(knowledge_file, "w") as f:
             json.dump(knowledge_data, f, indent=2)
 
         logger.info(f"💾 Saved knowledge base: {knowledge_file}")
         logger.info(f"   Fields: {', '.join(field_mappings.keys())}")
-        logger.info(f"   Total searchable values: {sum(len(f['searchable_values']) for f in field_mappings.values())}")
+        logger.info(
+            f"   Total searchable values: {sum(len(f['searchable_values']) for f in field_mappings.values())}"
+        )
 
-    async def _extract_dropdown_options_from_recording(self, url: str, actions: List) -> Dict[str, List[Dict]]:
+    async def _extract_dropdown_options_from_recording(
+        self, url: str, actions: List
+    ) -> Dict[str, List[Dict]]:
         """Extract dropdown options from recorded actions (wrapper for compatibility)"""
         # Convert RecordedAction objects to dicts if needed
         actions_dicts = []
         for a in actions:
-            if hasattr(a, '__dict__'):
+            if hasattr(a, "__dict__"):
                 actions_dicts.append(asdict(a))
             else:
                 actions_dicts.append(a)
         return await self._extract_dropdown_options(url, actions_dicts)
 
-    async def _extract_dropdown_options(self, url: str, actions: List[Dict]) -> Dict[str, List[Dict]]:
+    async def _extract_dropdown_options(
+        self, url: str, actions: List[Dict]
+    ) -> Dict[str, List[Dict]]:
         """Extract all options from dropdowns in the form"""
         from playwright.async_api import async_playwright
 
         dropdown_options = {}
-        select_actions = [a for a in actions if a.get('action_type') == 'select']
+        select_actions = [a for a in actions if a.get("action_type") == "select"]
 
         if not select_actions:
             return dropdown_options
@@ -948,10 +1057,11 @@ Be concise and helpful."""
 
             # Extract options from each dropdown
             for action in select_actions:
-                selector = action.get('selector', '')
+                selector = action.get("selector", "")
                 if selector:
                     try:
-                        options = await page.evaluate(f"""
+                        options = await page.evaluate(
+                            f"""
                             (selector) => {{
                                 const select = document.querySelector(selector);
                                 if (!select) return [];
@@ -960,11 +1070,15 @@ Be concise and helpful."""
                                     text: opt.text.trim()
                                 }})).filter(o => o.value && o.text);
                             }}
-                        """, selector)
+                        """,
+                            selector,
+                        )
 
                         if options:
                             dropdown_options[selector] = options
-                            logger.info(f"   Found {len(options)} options for {selector}")
+                            logger.info(
+                                f"   Found {len(options)} options for {selector}"
+                            )
                     except Exception as e:
                         logger.debug(f"Could not extract options for {selector}: {e}")
 
@@ -980,7 +1094,7 @@ Be concise and helpful."""
         municipality: str,
         url: str,
         actions: List[Dict],
-        dropdown_options_map: Dict[str, List[Dict]] = None
+        dropdown_options_map: Dict[str, List[Dict]] = None,
     ) -> str:
         """Generate Python scraper code from recorded actions"""
 
@@ -988,50 +1102,57 @@ Be concise and helpful."""
         # (since we record every keystroke, we only want the final result)
         fill_actions_map = {}
         for action in actions:
-            if action['action_type'] == 'fill':
-                selector = action['selector']
+            if action["action_type"] == "fill":
+                selector = action["selector"]
                 fill_actions_map[selector] = action  # Overwrites previous, keeping last
 
         fill_actions = list(fill_actions_map.values())
 
         # Keep all select and click actions (these are discrete, not keystrokes)
-        select_actions = [a for a in actions if a['action_type'] == 'select']
-        click_actions = [a for a in actions if a['action_type'] == 'click']
+        select_actions = [a for a in actions if a["action_type"] == "select"]
+        click_actions = [a for a in actions if a["action_type"] == "click"]
 
-        logger.info(f"Grouped {len(actions)} actions into {len(fill_actions)} fill, {len(select_actions)} select, {len(click_actions)} click actions")
+        logger.info(
+            f"Grouped {len(actions)} actions into {len(fill_actions)} fill, {len(select_actions)} select, {len(click_actions)} click actions"
+        )
 
         # Generate fill statements
         fill_code = ""
         for action in fill_actions:
-            selector = action['selector']
+            selector = action["selector"]
             # Extract a better field name from the selector or element info
-            element_info = action.get('elementInfo', {})
+            element_info = action.get("elementInfo", {})
 
             # Try to get a meaningful field name
-            if element_info.get('name'):
-                raw_name = element_info['name']
-            elif element_info.get('id'):
-                raw_name = element_info['id']
+            if element_info.get("name"):
+                raw_name = element_info["name"]
+            elif element_info.get("id"):
+                raw_name = element_info["id"]
             else:
-                raw_name = selector.strip('#')
+                raw_name = selector.strip("#")
 
             # Clean up ASP.NET field names (e.g., ctl00$ContentPlaceHolder1$txtComplaintName -> name)
-            if 'Name' in raw_name:
-                field_name = 'name'
-            elif 'Mobile' in raw_name:
-                field_name = 'mobile'
-            elif 'Contact' in raw_name:
-                field_name = 'contact'
-            elif 'Email' in raw_name:
-                field_name = 'email'
-            elif 'Address' in raw_name:
-                field_name = 'address'
-            elif 'Remark' in raw_name:
-                field_name = 'remarks'
-            elif 'attach' in raw_name.lower():
-                field_name = 'attachment'
+            if "Name" in raw_name:
+                field_name = "name"
+            elif "Mobile" in raw_name:
+                field_name = "mobile"
+            elif "Contact" in raw_name:
+                field_name = "contact"
+            elif "Email" in raw_name:
+                field_name = "email"
+            elif "Address" in raw_name:
+                field_name = "address"
+            elif "Remark" in raw_name:
+                field_name = "remarks"
+            elif "attach" in raw_name.lower():
+                field_name = "attachment"
             else:
-                field_name = raw_name.lower().replace('ctl00_contentplaceholder1_', '').replace('txt', '').replace('complaint', '')
+                field_name = (
+                    raw_name.lower()
+                    .replace("ctl00_contentplaceholder1_", "")
+                    .replace("txt", "")
+                    .replace("complaint", "")
+                )
 
             fill_code += f"""            # Fill {field_name}
             try:
@@ -1044,27 +1165,33 @@ Be concise and helpful."""
         # Generate select statements with Select2 support
         select_code = ""
         for action in select_actions:
-            selector = action['selector']
-            raw_selector = action.get('elementInfo', {}).get('id', selector.strip('#'))
-            field_name = action.get('elementInfo', {}).get('name', 'dropdown')
-            value = action.get('value', '')
+            selector = action["selector"]
+            raw_selector = action.get("elementInfo", {}).get("id", selector.strip("#"))
+            field_name = action.get("elementInfo", {}).get("name", "dropdown")
+            value = action.get("value", "")
 
             # Map to user-friendly field name
-            if 'Problem' in raw_selector or 'ddlProblem' in raw_selector:
-                field_name = 'problem_type'
-            elif 'Ward' in raw_selector:
-                field_name = 'ward' if 'ddlWard' == raw_selector.split('_')[-1] else 'area'
-            elif 'Area' in raw_selector:
-                field_name = 'area'
-            elif 'Mode' in raw_selector or 'complaint_mode' in raw_selector.lower():
-                field_name = 'complaint_mode'
+            if "Problem" in raw_selector or "ddlProblem" in raw_selector:
+                field_name = "problem_type"
+            elif "Ward" in raw_selector:
+                field_name = (
+                    "ward" if "ddlWard" == raw_selector.split("_")[-1] else "area"
+                )
+            elif "Area" in raw_selector:
+                field_name = "area"
+            elif "Mode" in raw_selector or "complaint_mode" in raw_selector.lower():
+                field_name = "complaint_mode"
 
             # Add available options as comments
             options_comment = ""
             if dropdown_options_map and selector in dropdown_options_map:
-                options_comment = f"\n            # Available options for {field_name}:\n"
+                options_comment = (
+                    f"\n            # Available options for {field_name}:\n"
+                )
                 for opt in dropdown_options_map[selector][:10]:  # Show first 10
-                    options_comment += f"            #   '{opt['value']}' = '{opt['text']}'\n"
+                    options_comment += (
+                        f"            #   '{opt['value']}' = '{opt['text']}'\n"
+                    )
                 if len(dropdown_options_map[selector]) > 10:
                     options_comment += f"            #   ... and {len(dropdown_options_map[selector]) - 10} more\n"
 
@@ -1097,12 +1224,14 @@ Be concise and helpful."""
         # Find submit button
         submit_selector = None
         for action in click_actions:
-            if 'submit' in action.get('elementInfo', {}).get('type', '').lower():
-                submit_selector = action['selector']
+            if "submit" in action.get("elementInfo", {}).get("type", "").lower():
+                submit_selector = action["selector"]
                 break
 
         if not submit_selector and click_actions:
-            submit_selector = click_actions[-1]['selector']  # Last click is probably submit
+            submit_selector = click_actions[-1][
+                "selector"
+            ]  # Last click is probably submit
 
         # Generate complete scraper
         code = f'''"""
@@ -1256,7 +1385,9 @@ async def main():
         print("Usage: python -m agents.human_recorder_agent <municipality> <url>")
         print()
         print("Example:")
-        print("  python -m agents.human_recorder_agent ranchi https://smartranchi.in/...")
+        print(
+            "  python -m agents.human_recorder_agent ranchi https://smartranchi.in/..."
+        )
         sys.exit(1)
 
     municipality = sys.argv[1]
@@ -1265,18 +1396,20 @@ async def main():
     recorder = HumanRecorderAgent(headless=False)
     result = await recorder.start_recording(url, municipality)
 
-    if result['success']:
+    if result["success"]:
         print()
         print("=" * 80)
         print("✅ RECORDING COMPLETE!")
         print("=" * 80)
         print(f"📊 Recorded {result['actions_count']} actions")
         print(f"💾 Saved to: {result['recording_file']}")
-        if result.get('tracking_id'):
+        if result.get("tracking_id"):
             print(f"🎫 Tracking ID: {result['tracking_id']}")
         print()
         print("Next step: Generate scraper from recording")
-        print(f"  python -c 'from agents.human_recorder_agent import HumanRecorderAgent; import asyncio; r = HumanRecorderAgent(); print(r.generate_scraper_from_recording(\"{result['recording_file']}\"))'")
+        print(
+            f"  python -c 'from agents.human_recorder_agent import HumanRecorderAgent; import asyncio; r = HumanRecorderAgent(); print(r.generate_scraper_from_recording(\"{result['recording_file']}\"))'"
+        )
         print()
 
 

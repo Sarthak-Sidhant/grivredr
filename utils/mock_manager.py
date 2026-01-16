@@ -1,6 +1,7 @@
 """
 Mock Manager - Prevents real submissions during scraper testing
 """
+
 import logging
 from typing import Any, Dict, Optional
 from unittest.mock import MagicMock, patch
@@ -48,21 +49,17 @@ class MockManager:
     def _mock_fill(self, selector: str, value: str, **kwargs):
         """Mock fill operation"""
         logger.info(f"[MOCK] Filling {selector} with: {value[:50]}...")
-        self.captured_calls.append({
-            "operation": "fill",
-            "selector": selector,
-            "value": value
-        })
+        self.captured_calls.append(
+            {"operation": "fill", "selector": selector, "value": value}
+        )
         return MagicMock()
 
     def _mock_select_option(self, selector: str, value: str, **kwargs):
         """Mock select operation"""
         logger.info(f"[MOCK] Selecting {value} in: {selector}")
-        self.captured_calls.append({
-            "operation": "select_option",
-            "selector": selector,
-            "value": value
-        })
+        self.captured_calls.append(
+            {"operation": "select_option", "selector": selector, "value": value}
+        )
         return MagicMock()
 
     def _mock_screenshot(self, **kwargs):
@@ -116,9 +113,7 @@ class PlaywrightMockContext:
             return self.mock_manager
 
         # Patch Playwright async operations
-        self.patches.append(
-            patch('playwright.async_api.async_playwright')
-        )
+        self.patches.append(patch("playwright.async_api.async_playwright"))
 
         # Start all patches
         for p in self.patches:

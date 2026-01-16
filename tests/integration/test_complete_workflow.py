@@ -2,6 +2,7 @@
 Integration test for complete Grivredr workflow
 Tests: Form Discovery → JS Analysis → Validation → Code Generation → Pattern Storage
 """
+
 import pytest
 import asyncio
 import json
@@ -21,35 +22,37 @@ async def test_complete_training_workflow_mocked():
     """
 
     # Mock AI responses
-    mock_form_analysis = json.dumps({
-        "form_fields": [
-            {
-                "label": "Name",
-                "type": "text",
-                "selector": "#name",
-                "required": True,
-                "placeholder": "Enter your name"
-            },
-            {
-                "label": "Email",
-                "type": "email",
-                "selector": "#email",
-                "required": True,
-                "placeholder": "Enter email"
-            },
-            {
-                "label": "Complaint",
-                "type": "textarea",
-                "selector": "#complaint",
-                "required": True,
-                "placeholder": "Describe your issue"
-            }
-        ],
-        "submit_button": {"selector": "#submit", "text": "Submit"},
-        "captcha_present": False,
-        "multi_step": False,
-        "form_url": "https://test.com/form"
-    })
+    mock_form_analysis = json.dumps(
+        {
+            "form_fields": [
+                {
+                    "label": "Name",
+                    "type": "text",
+                    "selector": "#name",
+                    "required": True,
+                    "placeholder": "Enter your name",
+                },
+                {
+                    "label": "Email",
+                    "type": "email",
+                    "selector": "#email",
+                    "required": True,
+                    "placeholder": "Enter email",
+                },
+                {
+                    "label": "Complaint",
+                    "type": "textarea",
+                    "selector": "#complaint",
+                    "required": True,
+                    "placeholder": "Describe your issue",
+                },
+            ],
+            "submit_button": {"selector": "#submit", "text": "Submit"},
+            "captcha_present": False,
+            "multi_step": False,
+            "form_url": "https://test.com/form",
+        }
+    )
 
     mock_scraper_code = '''
 class TestScraper:
@@ -70,31 +73,31 @@ class TestScraper:
         }
 '''
 
-    with patch('config.ai_client.ai_client') as mock_ai:
+    with patch("config.ai_client.ai_client") as mock_ai:
         # Mock AI client responses
         mock_ai.analyze_website_structure.return_value = mock_form_analysis
         mock_ai.generate_scraper_code.return_value = mock_scraper_code
 
         # Mock Playwright browser operations
-        with patch('agents.form_discovery_agent.async_playwright') as mock_playwright:
+        with patch("agents.form_discovery_agent.async_playwright") as mock_playwright:
             mock_browser = AsyncMock()
             mock_page = AsyncMock()
             mock_page.goto = AsyncMock()
-            mock_page.screenshot = AsyncMock(return_value=b'fake_screenshot')
-            mock_page.content = AsyncMock(return_value='<html><form id="test-form"></form></html>')
+            mock_page.screenshot = AsyncMock(return_value=b"fake_screenshot")
+            mock_page.content = AsyncMock(
+                return_value='<html><form id="test-form"></form></html>'
+            )
             mock_browser.new_page.return_value = mock_page
-            mock_playwright.return_value.__aenter__.return_value.chromium.launch.return_value = mock_browser
+            mock_playwright.return_value.__aenter__.return_value.chromium.launch.return_value = (
+                mock_browser
+            )
 
             # Initialize orchestrator
-            orchestrator = Orchestrator(
-                headless=True,
-                dashboard_enabled=False
-            )
+            orchestrator = Orchestrator(headless=True, dashboard_enabled=False)
 
             # Run complete training workflow
             result = await orchestrator.train_municipality(
-                url="https://test.com/form",
-                municipality="test_city"
+                url="https://test.com/form", municipality="test_city"
             )
 
     # Assertions
@@ -134,8 +137,8 @@ async def test_pattern_library_integration():
         "fields": [
             {"name": "name", "type": "text", "required": True},
             {"name": "email", "type": "email", "required": True},
-            {"name": "complaint", "type": "textarea", "required": True}
-        ]
+            {"name": "complaint", "type": "textarea", "required": True},
+        ],
     }
 
     # Store pattern
@@ -144,7 +147,7 @@ async def test_pattern_library_integration():
         form_schema=test_schema,
         code_snippets={"selector_fallbacks": "# test code"},
         confidence_score=0.95,
-        success_rate=1.0
+        success_rate=1.0,
     )
 
     # Find similar patterns
@@ -176,6 +179,7 @@ async def test_self_healing_workflow():
         if validation_attempt == 1:
             # First attempt fails
             from utils.scraper_validator import ValidationResult
+
             return ValidationResult(
                 success=False,
                 syntax_valid=True,
@@ -183,11 +187,12 @@ async def test_self_healing_workflow():
                 execution_result=None,
                 errors=["Missing required field: tracking_id"],
                 warnings=[],
-                confidence_score=0.4
+                confidence_score=0.4,
             )
         else:
             # Second attempt succeeds
             from utils.scraper_validator import ValidationResult
+
             return ValidationResult(
                 success=True,
                 syntax_valid=True,
@@ -195,33 +200,36 @@ async def test_self_healing_workflow():
                 execution_result={"success": True, "tracking_id": "TEST123"},
                 errors=[],
                 warnings=[],
-                confidence_score=0.9
+                confidence_score=0.9,
             )
 
-    mock_scraper_code_v1 = '''
+    mock_scraper_code_v1 = """
 class TestScraper:
     async def submit_grievance(self, data: dict) -> dict:
         return {"success": True}  # Missing tracking_id!
 
     async def run_test_mode(self, test_data: dict) -> dict:
         return {"success": True}
-'''
+"""
 
-    mock_scraper_code_v2 = '''
+    mock_scraper_code_v2 = """
 class TestScraper:
     async def submit_grievance(self, data: dict) -> dict:
         return {"success": True, "tracking_id": "TEST123"}  # Fixed!
 
     async def run_test_mode(self, test_data: dict) -> dict:
         return {"success": True, "tracking_id": "TEST123"}
-'''
+"""
 
-    with patch('utils.scraper_validator.ScraperValidator.validate_scraper', side_effect=mock_validate):
-        with patch('config.ai_client.ai_client') as mock_ai:
+    with patch(
+        "utils.scraper_validator.ScraperValidator.validate_scraper",
+        side_effect=mock_validate,
+    ):
+        with patch("config.ai_client.ai_client") as mock_ai:
             # First generation returns broken code, second returns fixed code
             mock_ai.generate_scraper_code.side_effect = [
                 mock_scraper_code_v1,
-                mock_scraper_code_v2  # After healing
+                mock_scraper_code_v2,  # After healing
             ]
 
             from agents.code_generator_agent import CodeGeneratorAgent
@@ -231,10 +239,10 @@ class TestScraper:
             task = {
                 "schema": {
                     "url": "https://test.com/form",
-                    "fields": [{"name": "name", "type": "text"}]
+                    "fields": [{"name": "name", "type": "text"}],
                 },
                 "js_analysis": {},
-                "test_results": {}
+                "test_results": {},
             }
 
             result = await agent.execute(task)
@@ -254,10 +262,15 @@ def test_dashboard_integration():
     """
     Test that dashboard can be imported and started
     """
-    from dashboard.app import app, socketio, emit_training_update, emit_training_complete
+    from dashboard.app import (
+        app,
+        socketio,
+        emit_training_update,
+        emit_training_complete,
+    )
 
     # Test that Flask app is configured
-    assert app.config['SECRET_KEY'] is not None
+    assert app.config["SECRET_KEY"] is not None
 
     # Test that SocketIO is initialized
     assert socketio is not None
@@ -281,8 +294,8 @@ async def test_js_monitoring_integration():
 
     # Get monitoring script
     script = monitor.get_monitoring_script()
-    assert 'window.__grivredr_events' in script
-    assert 'XMLHttpRequest' in script
+    assert "window.__grivredr_events" in script
+    assert "XMLHttpRequest" in script
 
     # Test event analysis
     mock_events = [
@@ -291,14 +304,14 @@ async def test_js_monitoring_integration():
             "url": "https://test.com/api/cities",
             "status": 200,
             "method": "GET",
-            "timestamp": 1000
+            "timestamp": 1000,
         },
         {
             "type": "dom_mutation",
             "target": "#city-dropdown",
             "mutation_type": "childList",
-            "timestamp": 1100
-        }
+            "timestamp": 1100,
+        },
     ]
 
     analysis = monitor.analyze_events(mock_events)
@@ -320,6 +333,6 @@ if __name__ == "__main__":
     test_dashboard_integration()
     asyncio.run(test_js_monitoring_integration())
 
-    print("\n" + "="*80)
+    print("\n" + "=" * 80)
     print("🎉 ALL INTEGRATION TESTS PASSED!")
-    print("="*80)
+    print("=" * 80)

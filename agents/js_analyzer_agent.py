@@ -2,6 +2,7 @@
 JavaScript Analyzer Agent - Analyzes form submission logic and dynamic behavior
 Determines if form can be replicated in Python or needs browser automation
 """
+
 import asyncio
 import json
 import logging
@@ -12,7 +13,7 @@ from playwright.async_api import async_playwright, Page, Browser
 
 from agents.base_agent import BaseAgent, cost_tracker
 from agents.form_discovery_agent import FormSchema
-from config.ai_client import ai_client
+from config.multi_provider_client import ai_client
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -21,6 +22,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class JSEvent:
     """Captured JavaScript event"""
+
     event_type: str  # xhr, fetch, form_submit, validation, etc.
     timestamp: float
     details: Dict[str, Any]
@@ -29,6 +31,7 @@ class JSEvent:
 @dataclass
 class JSAnalysis:
     """Complete JavaScript analysis"""
+
     submission_method: str  # form_post, ajax_xhr, ajax_fetch, custom
     endpoint: str = ""
     http_method: str = "POST"
@@ -96,14 +99,14 @@ class JavaScriptAnalyzerAgent(BaseAgent):
                 action_type="js_analysis",
                 description="Completed JavaScript analysis",
                 result=final_analysis.recommendation,
-                success=True
+                success=True,
             )
 
             return {
                 "success": True,
                 "message": f"Analysis complete: {final_analysis.submission_method}",
                 "analysis": self._analysis_to_dict(final_analysis),
-                "recommendation": final_analysis.recommendation
+                "recommendation": final_analysis.recommendation,
             }
 
         except Exception as e:
@@ -124,10 +127,10 @@ class JavaScriptAnalyzerAgent(BaseAgent):
                 browser_launcher = self.playwright.webkit
             else:
                 browser_launcher = self.playwright.chromium
-            
+
             self.browser = await browser_launcher.launch(
                 headless=self.headless,
-                args=['--no-sandbox'] if self.browser_type == "chromium" else []
+                args=["--no-sandbox"] if self.browser_type == "chromium" else [],
             )
 
     async def _cleanup_browser(self):
@@ -153,39 +156,46 @@ class JavaScriptAnalyzerAgent(BaseAgent):
         # ENHANCED: Monitor ALL network requests with full details
         async def handle_request(route, request):
             """Capture all network requests for API detection"""
-            network_requests.append({
-                'url': request.url,
-                'method': request.method,
-                'headers': dict(request.headers),
-                'post_data': request.post_data,
-                'resource_type': request.resource_type,
-                'timestamp': time.time()
-            })
+            network_requests.append(
+                {
+                    "url": request.url,
+                    "method": request.method,
+                    "headers": dict(request.headers),
+                    "post_data": request.post_data,
+                    "resource_type": request.resource_type,
+                    "timestamp": time.time(),
+                }
+            )
             await route.continue_()
 
         async def handle_response(response):
             """Capture response data"""
             try:
-                if response.request.resource_type in ['xhr', 'fetch']:
+                if response.request.resource_type in ["xhr", "fetch"]:
                     # This is an API call - capture the response
-                    network_requests.append({
-                        'type': 'response',
-                        'url': response.url,
-                        'status': response.status,
-                        'headers': dict(await response.all_headers()),
-                        'body': (await response.text())[:1000] if response.ok else None,  # First 1000 chars
-                        'timestamp': time.time()
-                    })
+                    network_requests.append(
+                        {
+                            "type": "response",
+                            "url": response.url,
+                            "status": response.status,
+                            "headers": dict(await response.all_headers()),
+                            "body": (
+                                (await response.text())[:1000] if response.ok else None
+                            ),  # First 1000 chars
+                            "timestamp": time.time(),
+                        }
+                    )
             except:
                 pass
 
         # Intercept all network traffic
-        await page.route('**/*', handle_request)
-        page.on('response', handle_response)
+        await page.route("**/*", handle_request)
+        page.on("response", handle_response)
 
         try:
             # Inject monitoring script
-            await page.add_init_script("""
+            await page.add_init_script(
+                """
                 window._grivredr_events = [];
 
                 // Monitor XHR
@@ -263,7 +273,8 @@ class JavaScriptAnalyzerAgent(BaseAgent):
                 }, true);
 
                 console.log('✅ Grivredr monitoring active');
-            """)
+            """
+            )
 
             # Navigate to page
             await page.goto(url, wait_until="networkidle", timeout=30000)
@@ -279,7 +290,9 @@ class JavaScriptAnalyzerAgent(BaseAgent):
             # Try to submit
             logger.info("   Submitting form to capture submission logic...")
             try:
-                await page.click("button[type='submit'], input[type='submit']", timeout=5000)
+                await page.click(
+                    "button[type='submit'], input[type='submit']", timeout=5000
+                )
                 await asyncio.sleep(2)
             except:
                 logger.warning("   Could not click submit button")
@@ -291,19 +304,27 @@ class JavaScriptAnalyzerAgent(BaseAgent):
 
             # Convert to JSEvent objects
             for event_data in captured:
-                events.append(JSEvent(
-                    event_type=event_data.get("type", "unknown"),
-                    timestamp=event_data.get("timestamp", time.time() * 1000),
-                    details=event_data
-                ))
+                events.append(
+                    JSEvent(
+                        event_type=event_data.get("type", "unknown"),
+                        timestamp=event_data.get("timestamp", time.time() * 1000),
+                        details=event_data,
+                    )
+                )
 
             # Add network requests as events
             for req in network_requests:
-                events.append(JSEvent(
-                    event_type='network_request' if req.get('method') else 'network_response',
-                    timestamp=req.get('timestamp', time.time()) * 1000,
-                    details=req
-                ))
+                events.append(
+                    JSEvent(
+                        event_type=(
+                            "network_request"
+                            if req.get("method")
+                            else "network_response"
+                        ),
+                        timestamp=req.get("timestamp", time.time()) * 1000,
+                        details=req,
+                    )
+                )
 
             logger.info(f"   🌐 Captured {len(network_requests)} network requests")
 
@@ -320,7 +341,9 @@ class JavaScriptAnalyzerAgent(BaseAgent):
         """Fill form with dummy data to trigger events - handles Ant Design and Select2"""
         try:
             # Fill text inputs
-            text_inputs = await page.query_selector_all("input[type='text'], input[type='email'], input[type='tel']")
+            text_inputs = await page.query_selector_all(
+                "input[type='text'], input[type='email'], input[type='tel']"
+            )
             for inp in text_inputs[:5]:  # First 5
                 try:
                     # Check if visible and enabled
@@ -343,25 +366,31 @@ class JavaScriptAnalyzerAgent(BaseAgent):
 
             # Handle Ant Design dropdowns with CASCADING support
             # Must fill ALL dropdowns and wait between each for cascading to work
-            ant_selects = await page.query_selector_all(".ant-select:not(.ant-select-disabled)")
+            ant_selects = await page.query_selector_all(
+                ".ant-select:not(.ant-select-disabled)"
+            )
             logger.debug(f"Found {len(ant_selects)} Ant Design dropdowns to fill")
-            
+
             for i, ant_sel in enumerate(ant_selects):
                 try:
                     # Check if dropdown is visible and enabled
                     is_visible = await ant_sel.is_visible()
                     if not is_visible:
                         continue
-                    
+
                     await ant_sel.click(timeout=2000)
                     await asyncio.sleep(0.8)  # Wait for dropdown to open
-                    
+
                     # Click first available option
-                    first_option = page.locator(".ant-select-dropdown:visible .ant-select-item-option").first
+                    first_option = page.locator(
+                        ".ant-select-dropdown:visible .ant-select-item-option"
+                    ).first
                     if await first_option.count() > 0:
                         option_text = await first_option.text_content()
                         await first_option.click(timeout=1000)
-                        logger.debug(f"  Ant Design dropdown {i+1}: selected '{option_text[:30] if option_text else 'option'}'")
+                        logger.debug(
+                            f"  Ant Design dropdown {i+1}: selected '{option_text[:30] if option_text else 'option'}'"
+                        )
                         # CRITICAL: Wait for cascading dropdowns to load their options
                         await asyncio.sleep(1.5)
                     else:
@@ -390,7 +419,7 @@ class JavaScriptAnalyzerAgent(BaseAgent):
                 try:
                     await container.click(timeout=2000)
                     await asyncio.sleep(0.3)
-                    
+
                     first_result = page.locator(".select2-results__option").first
                     if await first_result.count() > 0:
                         await first_result.click(timeout=1000)
@@ -415,33 +444,39 @@ class JavaScriptAnalyzerAgent(BaseAgent):
             "has_xhr": any(e.event_type == "xhr" for e in events),
             "has_fetch": any(e.event_type == "fetch" for e in events),
             "has_form_submit": any(e.event_type == "form_submit" for e in events),
-            "validation_errors": [e for e in events if e.event_type == "validation_error"],
+            "validation_errors": [
+                e for e in events if e.event_type == "validation_error"
+            ],
             "ajax_calls": [],
             "api_calls": [],  # NEW: Detailed API call tracking
-            "submission_endpoint": None
+            "submission_endpoint": None,
         }
 
         # Extract AJAX calls
         for event in events:
             if event.event_type in ["xhr", "fetch"]:
-                analysis["ajax_calls"].append({
-                    "type": event.event_type,
-                    "method": event.details.get("method", "GET"),
-                    "url": event.details.get("url", ""),
-                    "data": event.details.get("data", {})
-                })
+                analysis["ajax_calls"].append(
+                    {
+                        "type": event.event_type,
+                        "method": event.details.get("method", "GET"),
+                        "url": event.details.get("url", ""),
+                        "data": event.details.get("data", {}),
+                    }
+                )
 
             # NEW: Extract full network requests for API detection
             if event.event_type == "network_request":
                 resource_type = event.details.get("resource_type", "")
                 if resource_type in ["xhr", "fetch"]:
-                    analysis["api_calls"].append({
-                        "url": event.details.get("url"),
-                        "method": event.details.get("method"),
-                        "headers": event.details.get("headers", {}),
-                        "body": event.details.get("post_data"),
-                        "resource_type": resource_type
-                    })
+                    analysis["api_calls"].append(
+                        {
+                            "url": event.details.get("url"),
+                            "method": event.details.get("method"),
+                            "headers": event.details.get("headers", {}),
+                            "body": event.details.get("post_data"),
+                            "resource_type": resource_type,
+                        }
+                    )
 
             # NEW: Match responses to requests
             if event.event_type == "network_response":
@@ -452,7 +487,7 @@ class JavaScriptAnalyzerAgent(BaseAgent):
                         api_call["response"] = {
                             "status": event.details.get("status"),
                             "headers": event.details.get("headers", {}),
-                            "body": event.details.get("body")
+                            "body": event.details.get("body"),
                         }
                         break
 
@@ -462,7 +497,9 @@ class JavaScriptAnalyzerAgent(BaseAgent):
             analysis["submission_endpoint"] = form_submits[-1].details.get("action", "")
 
         # Check for AJAX submission (XHR/fetch after form interaction)
-        if (analysis["has_xhr"] or analysis["has_fetch"]) and not analysis["has_form_submit"]:
+        if (analysis["has_xhr"] or analysis["has_fetch"]) and not analysis[
+            "has_form_submit"
+        ]:
             # Likely AJAX submission
             if analysis["ajax_calls"]:
                 last_call = analysis["ajax_calls"][-1]
@@ -471,10 +508,7 @@ class JavaScriptAnalyzerAgent(BaseAgent):
         return analysis
 
     async def _ask_claude_to_interpret(
-        self,
-        url: str,
-        events: List[JSEvent],
-        preliminary: Dict[str, Any]
+        self, url: str, events: List[JSEvent], preliminary: Dict[str, Any]
     ) -> str:
         """
         Ask Claude to interpret the JavaScript behavior
@@ -484,10 +518,12 @@ class JavaScriptAnalyzerAgent(BaseAgent):
         # Format events for Claude
         events_summary = []
         for event in events[:20]:  # First 20 events
-            events_summary.append({
-                "type": event.event_type,
-                "details": str(event.details)[:200]  # Truncate
-            })
+            events_summary.append(
+                {
+                    "type": event.event_type,
+                    "details": str(event.details)[:200],  # Truncate
+                }
+            )
 
         prompt = f"""Analyze this form's JavaScript behavior from {url}.
 
@@ -526,7 +562,7 @@ Return JSON:
             model=ai_client.models["powerful"],  # Opus for complex analysis
             messages=[{"role": "user", "content": prompt}],
             temperature=0.2,
-            max_tokens=2000
+            max_tokens=2000,
         )
         elapsed = time.time() - start_time
 
@@ -535,7 +571,7 @@ Return JSON:
             model=ai_client.models["powerful"],
             input_tokens=usage.input_tokens,
             output_tokens=usage.output_tokens,
-            agent_name=self.name
+            agent_name=self.name,
         )
 
         self._record_action(
@@ -543,15 +579,13 @@ Return JSON:
             description="Claude interpreted JS behavior",
             result=response.content[0].text[:200],
             success=True,
-            cost=cost
+            cost=cost,
         )
 
         return response.content[0].text
 
     async def _determine_automation_strategy(
-        self,
-        claude_response: str,
-        events: List[JSEvent]
+        self, claude_response: str, events: List[JSEvent]
     ) -> JSAnalysis:
         """
         Determine final automation strategy based on analysis
@@ -559,12 +593,14 @@ Return JSON:
         import re
 
         # Parse Claude's JSON response
-        json_match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', claude_response, re.DOTALL)
+        json_match = re.search(
+            r"```(?:json)?\s*(\{.*?\})\s*```", claude_response, re.DOTALL
+        )
         if json_match:
             try:
                 data = json.loads(json_match.group(1))
             except:
-                json_match = re.search(r'\{.*\}', claude_response, re.DOTALL)
+                json_match = re.search(r"\{.*\}", claude_response, re.DOTALL)
                 data = json.loads(json_match.group(0)) if json_match else {}
         else:
             data = {}
@@ -573,7 +609,7 @@ Return JSON:
             submission_method=data.get("submission_method", "unknown"),
             endpoint=data.get("endpoint", ""),
             http_method=data.get("http_method", "POST"),
-            csrf_token_required=data.get("csrf_token_needed", False)
+            csrf_token_required=data.get("csrf_token_needed", False),
         )
 
         # Determine if browser is needed
@@ -667,7 +703,7 @@ async def submit_form(data):
             "csrf_token_required": analysis.csrf_token_required,
             "csrf_token_selector": analysis.csrf_token_selector,
             "recommendation": analysis.recommendation,
-            "warnings": analysis.warnings
+            "warnings": analysis.warnings,
         }
 
 
@@ -676,9 +712,11 @@ async def test_js_analyzer():
     """Test the JS analyzer agent"""
     agent = JavaScriptAnalyzerAgent(headless=False)
 
-    result = await agent.execute({
-        "url": "https://smartranchi.in/Portal/View/ComplaintRegistration.aspx?m=Online"
-    })
+    result = await agent.execute(
+        {
+            "url": "https://smartranchi.in/Portal/View/ComplaintRegistration.aspx?m=Online"
+        }
+    )
 
     print(json.dumps(result, indent=2, default=str))
 

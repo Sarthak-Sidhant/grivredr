@@ -2,6 +2,7 @@
 AI Call Caching - Cache expensive AI API calls to reduce costs
 Uses SQLite with TTL (time-to-live) expiration
 """
+
 import sqlite3
 import hashlib
 import json
@@ -24,11 +25,7 @@ class AICache:
     - Savings: 40%
     """
 
-    def __init__(
-        self,
-        db_path: str = "cache/ai_cache.db",
-        default_ttl_hours: int = 24
-    ):
+    def __init__(self, db_path: str = "cache/ai_cache.db", default_ttl_hours: int = 24):
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(exist_ok=True)
         self.default_ttl_hours = default_ttl_hours
@@ -44,7 +41,8 @@ class AICache:
         conn = sqlite3.connect(str(self.db_path))
         cursor = conn.cursor()
 
-        cursor.execute("""
+        cursor.execute(
+            """
             CREATE TABLE IF NOT EXISTS cache (
                 cache_key TEXT PRIMARY KEY,
                 response TEXT NOT NULL,
@@ -54,13 +52,16 @@ class AICache:
                 hit_count INTEGER DEFAULT 0,
                 last_hit_at DATETIME
             )
-        """)
+        """
+        )
 
         # Index for expiration cleanup
-        cursor.execute("""
+        cursor.execute(
+            """
             CREATE INDEX IF NOT EXISTS idx_expires_at
             ON cache(expires_at)
-        """)
+        """
+        )
 
         conn.commit()
         conn.close()
@@ -68,10 +69,7 @@ class AICache:
         logger.info(f"✅ AI cache initialized: {self.db_path}")
 
     def _generate_cache_key(
-        self,
-        prompt: str,
-        model: str,
-        image_data: Optional[str] = None
+        self, prompt: str, model: str, image_data: Optional[str] = None
     ) -> str:
         """
         Generate cache key from prompt and image
@@ -94,11 +92,14 @@ class AICache:
         cache_key = hashlib.sha256(cache_input.encode()).hexdigest()
         return cache_key
 
+    def generate_cache_key(
+        self, prompt: str, model: str, image_data: Optional[str] = None
+    ) -> str:
+        """Public wrapper for cache key generation (for external callers)"""
+        return self._generate_cache_key(prompt, model, image_data)
+
     def get(
-        self,
-        prompt: str,
-        model: str,
-        image_data: Optional[str] = None
+        self, prompt: str, model: str, image_data: Optional[str] = None
     ) -> Optional[str]:
         """
         Get cached response if available and not expired
@@ -117,11 +118,14 @@ class AICache:
         cursor = conn.cursor()
 
         # Get from cache
-        cursor.execute("""
+        cursor.execute(
+            """
             SELECT response, expires_at
             FROM cache
             WHERE cache_key = ?
-        """, (cache_key,))
+        """,
+            (cache_key,),
+        )
 
         row = cursor.fetchone()
 
@@ -144,12 +148,15 @@ class AICache:
             return None
 
         # Cache hit! Update statistics
-        cursor.execute("""
+        cursor.execute(
+            """
             UPDATE cache
             SET hit_count = hit_count + 1,
                 last_hit_at = ?
             WHERE cache_key = ?
-        """, (datetime.now(), cache_key))
+        """,
+            (datetime.now(), cache_key),
+        )
 
         conn.commit()
         conn.close()
@@ -165,7 +172,7 @@ class AICache:
         model: str,
         response: str,
         ttl_hours: Optional[int] = None,
-        image_data: Optional[str] = None
+        image_data: Optional[str] = None,
     ):
         """
         Store response in cache
@@ -187,11 +194,14 @@ class AICache:
         cursor = conn.cursor()
 
         # Insert or replace
-        cursor.execute("""
+        cursor.execute(
+            """
             INSERT OR REPLACE INTO cache
             (cache_key, response, model, created_at, expires_at, hit_count, last_hit_at)
             VALUES (?, ?, ?, ?, ?, 0, NULL)
-        """, (cache_key, response, model, created_at, expires_at))
+        """,
+            (cache_key, response, model, created_at, expires_at),
+        )
 
         conn.commit()
         conn.close()
@@ -203,10 +213,13 @@ class AICache:
         conn = sqlite3.connect(str(self.db_path))
         cursor = conn.cursor()
 
-        cursor.execute("""
+        cursor.execute(
+            """
             DELETE FROM cache
             WHERE expires_at < ?
-        """, (datetime.now(),))
+        """,
+            (datetime.now(),),
+        )
 
         deleted_count = cursor.rowcount
         conn.commit()
@@ -241,16 +254,20 @@ class AICache:
         total_entries = cursor.fetchone()[0]
 
         # Expired entries
-        cursor.execute("SELECT COUNT(*) FROM cache WHERE expires_at < ?", (datetime.now(),))
+        cursor.execute(
+            "SELECT COUNT(*) FROM cache WHERE expires_at < ?", (datetime.now(),)
+        )
         expired_entries = cursor.fetchone()[0]
 
         # Most hit entries
-        cursor.execute("""
+        cursor.execute(
+            """
             SELECT model, hit_count, created_at
             FROM cache
             ORDER BY hit_count DESC
             LIMIT 5
-        """)
+        """
+        )
         most_hit = cursor.fetchall()
 
         conn.close()
@@ -267,19 +284,12 @@ class AICache:
             "session_misses": self.misses,
             "hit_rate": hit_rate,
             "most_hit": [
-                {
-                    "model": row[0],
-                    "hit_count": row[1],
-                    "created_at": row[2]
-                }
+                {"model": row[0], "hit_count": row[1], "created_at": row[2]}
                 for row in most_hit
-            ]
+            ],
         }
 
-    def estimate_cost_savings(
-        self,
-        avg_cost_per_call: float = 0.05
-    ) -> Dict[str, Any]:
+    def estimate_cost_savings(self, avg_cost_per_call: float = 0.05) -> Dict[str, Any]:
         """
         Estimate cost savings from cache
 
@@ -297,13 +307,15 @@ class AICache:
                 "cost_without_cache": 0.0,
                 "cost_with_cache": 0.0,
                 "savings": 0.0,
-                "savings_percentage": 0.0
+                "savings_percentage": 0.0,
             }
 
         cost_without_cache = total_requests * avg_cost_per_call
         cost_with_cache = self.misses * avg_cost_per_call
         savings = cost_without_cache - cost_with_cache
-        savings_percentage = (savings / cost_without_cache) * 100 if cost_without_cache > 0 else 0
+        savings_percentage = (
+            (savings / cost_without_cache) * 100 if cost_without_cache > 0 else 0
+        )
 
         return {
             "total_requests": total_requests,
@@ -313,7 +325,7 @@ class AICache:
             "cost_without_cache": cost_without_cache,
             "cost_with_cache": cost_with_cache,
             "savings": savings,
-            "savings_percentage": savings_percentage
+            "savings_percentage": savings_percentage,
         }
 
 
@@ -328,11 +340,12 @@ def cached_ai_call(cache: AICache, ttl_hours: int = 24):
             # ... call AI API
             return response
     """
+
     def decorator(func):
         async def wrapper(*args, **kwargs):
             # Extract prompt and model from args/kwargs
-            prompt = kwargs.get('prompt') or (args[0] if len(args) > 0 else None)
-            model = kwargs.get('model') or (args[1] if len(args) > 1 else None)
+            prompt = kwargs.get("prompt") or (args[0] if len(args) > 0 else None)
+            model = kwargs.get("model") or (args[1] if len(args) > 1 else None)
 
             if not prompt or not model:
                 # Can't cache without prompt and model
@@ -352,14 +365,15 @@ def cached_ai_call(cache: AICache, ttl_hours: int = 24):
             return response
 
         return wrapper
+
     return decorator
 
 
 # For testing
 if __name__ == "__main__":
-    print("\n" + "="*80)
+    print("\n" + "=" * 80)
     print("TESTING AI CACHE")
-    print("="*80)
+    print("=" * 80)
 
     cache = AICache()
 
@@ -371,7 +385,7 @@ if __name__ == "__main__":
     # Set some cache entries
     print("\n📝 Setting cache entries...")
     cache.set(prompt1, model, '{"fields": ["name", "email"]}', ttl_hours=24)
-    cache.set(prompt2, model, 'class FormScraper:\n    pass', ttl_hours=24)
+    cache.set(prompt2, model, "class FormScraper:\n    pass", ttl_hours=24)
 
     # Test cache hits
     print("\n✅ Testing cache hits...")
@@ -412,4 +426,4 @@ if __name__ == "__main__":
     deleted = cache.clear_expired()
     print(f"   Deleted: {deleted} entries")
 
-    print("\n" + "="*80)
+    print("\n" + "=" * 80)

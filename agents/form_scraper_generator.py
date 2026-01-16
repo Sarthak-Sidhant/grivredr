@@ -25,18 +25,17 @@ class FormScraperGenerator:
         self.output_dir.mkdir(exist_ok=True)
         self.api_key = os.getenv("api_key")
         self.anthropic_client = anthropic.Anthropic(
-            api_key=self.api_key,
-            base_url="https://ai.megallm.io"
+            api_key=self.api_key, base_url="https://ai.megallm.io"
         )
 
     async def discover_form(self, url: str, headless: bool = True) -> dict:
         """Use Browser-use AI to discover all form fields and their selectors"""
 
         llm = ChatAnthropic(
-            model='claude-sonnet-4-5-20250929',
+            model="claude-sonnet-4-5-20250929",
             temperature=0.0,
             api_key=self.api_key,
-            base_url="https://ai.megallm.io"
+            base_url="https://ai.megallm.io",
         )
 
         profile = BrowserProfile(
@@ -120,21 +119,21 @@ Be thorough - missing a field means the generated scraper will fail!"""
         # Extract the JSON from the result
         # The result object has different attributes depending on version
         final_text = None
-        if hasattr(result, 'final_result'):
+        if hasattr(result, "final_result"):
             fr = result.final_result
             if callable(fr):
                 fr = fr()
             if isinstance(fr, str):
                 final_text = fr
-            elif hasattr(fr, 'text'):
+            elif hasattr(fr, "text"):
                 final_text = fr.text
 
         # Try to get from history if final_result didn't work
-        if not final_text and hasattr(result, 'history'):
+        if not final_text and hasattr(result, "history"):
             for item in reversed(result.history):
-                if hasattr(item, 'result') and item.result:
+                if hasattr(item, "result") and item.result:
                     for r in item.result:
-                        if hasattr(r, 'extracted_content') and r.extracted_content:
+                        if hasattr(r, "extracted_content") and r.extracted_content:
                             final_text = r.extracted_content
                             break
                     if final_text:
@@ -150,7 +149,7 @@ Be thorough - missing a field means the generated scraper will fail!"""
         import re
 
         # Look for JSON block
-        json_match = re.search(r'\{[\s\S]*\}', result_text)
+        json_match = re.search(r"\{[\s\S]*\}", result_text)
         if json_match:
             try:
                 return json.loads(json_match.group())
@@ -208,7 +207,7 @@ Generate ONLY the Python code, no explanations. The code should be complete and 
         response = self.anthropic_client.messages.create(
             model="claude-sonnet-4-5-20250929",
             max_tokens=8000,
-            messages=[{"role": "user", "content": prompt}]
+            messages=[{"role": "user", "content": prompt}],
         )
 
         code = response.content[0].text
@@ -232,12 +231,12 @@ Generate ONLY the Python code, no explanations. The code should be complete and 
 
         # Save scraper code
         scraper_path = portal_dir / f"{portal_name}_scraper.py"
-        with open(scraper_path, 'w') as f:
+        with open(scraper_path, "w") as f:
             f.write(code)
 
         # Save form structure for reference
         structure_path = portal_dir / f"{portal_name}_structure.json"
-        with open(structure_path, 'w') as f:
+        with open(structure_path, "w") as f:
             json.dump(form_structure, f, indent=2)
 
         # Save metadata
@@ -247,10 +246,10 @@ Generate ONLY the Python code, no explanations. The code should be complete and 
             "form_url": form_structure.get("form_url", "unknown"),
             "total_fields": form_structure.get("total_fields", 0),
             "scraper_file": str(scraper_path),
-            "structure_file": str(structure_path)
+            "structure_file": str(structure_path),
         }
         metadata_path = portal_dir / "metadata.json"
-        with open(metadata_path, 'w') as f:
+        with open(metadata_path, "w") as f:
             json.dump(metadata, f, indent=2)
 
         print(f"Scraper saved to: {scraper_path}")
@@ -258,7 +257,9 @@ Generate ONLY the Python code, no explanations. The code should be complete and 
 
         return scraper_path
 
-    async def generate_from_url(self, url: str, portal_name: str, headless: bool = True) -> Path:
+    async def generate_from_url(
+        self, url: str, portal_name: str, headless: bool = True
+    ) -> Path:
         """Complete pipeline: discover form and generate scraper"""
 
         print(f"\n{'='*60}")
@@ -287,8 +288,12 @@ Generate ONLY the Python code, no explanations. The code should be complete and 
         print("Generation complete!")
         print(f"{'='*60}")
         print(f"\nTo use the scraper:")
-        print(f"  from scrapers.{portal_name}.{portal_name}_scraper import {portal_name.title().replace('_', '')}FormFiller")
-        print(f"\n  async with {portal_name.title().replace('_', '')}FormFiller() as filler:")
+        print(
+            f"  from scrapers.{portal_name}.{portal_name}_scraper import {portal_name.title().replace('_', '')}FormFiller"
+        )
+        print(
+            f"\n  async with {portal_name.title().replace('_', '')}FormFiller() as filler:"
+        )
         print(f"      await filler.run(data={{'field': 'value'}})")
 
         return scraper_path
@@ -302,9 +307,7 @@ async def main():
     url = "https://mcd.everythingcivic.com/citizen/createissue?app_id=U2FsdGVkX180J3mGnJmT5QpgtPjhfjtzyXAAccBUxGU%3D&api_key=e34ba86d3943bd6db9120313da011937189e6a9625170905750f649395bcd68312cf10d264c9305d57c23688cc2e5120"
 
     scraper_path = await generator.generate_from_url(
-        url=url,
-        portal_name="mcd_delhi",
-        headless=True
+        url=url, portal_name="mcd_delhi", headless=True
     )
 
     print(f"\nGenerated scraper: {scraper_path}")

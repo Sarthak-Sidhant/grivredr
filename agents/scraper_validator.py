@@ -15,16 +15,23 @@ from datetime import datetime
 from typing import Dict, Any, Optional, List, Tuple
 from dataclasses import dataclass, field
 import anthropic
-from playwright.async_api import async_playwright, Page, Browser, Error as PlaywrightError
+from playwright.async_api import (
+    async_playwright,
+    Page,
+    Browser,
+    Error as PlaywrightError,
+)
 import base64
 
 from dotenv import load_dotenv
+
 load_dotenv()
 
 
 @dataclass
 class ValidationResult:
     """Result of a single validation attempt"""
+
     success: bool
     attempt: int
     error: Optional[str] = None
@@ -42,6 +49,7 @@ class ValidationResult:
 @dataclass
 class FixResult:
     """Result of an AI code fix attempt"""
+
     success: bool
     changes_made: List[str] = field(default_factory=list)
     reasoning: str = ""
@@ -51,6 +59,7 @@ class FixResult:
 
 class CostTracker:
     """Track API costs"""
+
     PRICING = {
         "claude-sonnet-4-5-20250929": {"input": 3.0, "output": 15.0},
         "claude-opus-4-5-20250929": {"input": 15.0, "output": 75.0},
@@ -62,8 +71,9 @@ class CostTracker:
 
     def add(self, model: str, input_tokens: int, output_tokens: int) -> float:
         pricing = self.PRICING.get(model, {"input": 3.0, "output": 15.0})
-        cost = (input_tokens * pricing["input"] / 1_000_000) + \
-               (output_tokens * pricing["output"] / 1_000_000)
+        cost = (input_tokens * pricing["input"] / 1_000_000) + (
+            output_tokens * pricing["output"] / 1_000_000
+        )
         self.total_cost += cost
         self.calls += 1
         return cost
@@ -77,10 +87,7 @@ class ScreenshotVerifier:
         self.cost_tracker = cost_tracker
 
     async def verify_screenshot(
-        self,
-        screenshot_base64: str,
-        verification_query: str,
-        context: str = ""
+        self, screenshot_base64: str, verification_query: str, context: str = ""
     ) -> Dict[str, Any]:
         """
         Use AI vision to verify something about the screenshot
@@ -111,36 +118,35 @@ Respond with JSON:
         response = self.client.messages.create(
             model="claude-sonnet-4-5-20250929",
             max_tokens=1000,
-            messages=[{
-                "role": "user",
-                "content": [
-                    {
-                        "type": "image",
-                        "source": {
-                            "type": "base64",
-                            "media_type": "image/png",
-                            "data": screenshot_base64
-                        }
-                    },
-                    {
-                        "type": "text",
-                        "text": prompt
-                    }
-                ]
-            }]
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": "image/png",
+                                "data": screenshot_base64,
+                            },
+                        },
+                        {"type": "text", "text": prompt},
+                    ],
+                }
+            ],
         )
 
         self.cost_tracker.add(
             "claude-sonnet-4-5-20250929",
             response.usage.input_tokens,
-            response.usage.output_tokens
+            response.usage.output_tokens,
         )
 
         # Parse response
         text = response.content[0].text
         try:
             # Extract JSON from response
-            json_match = re.search(r'\{[\s\S]*\}', text)
+            json_match = re.search(r"\{[\s\S]*\}", text)
             if json_match:
                 return json.loads(json_match.group())
         except:
@@ -151,13 +157,11 @@ Respond with JSON:
             "confidence": 0.0,
             "observation": text,
             "issues_detected": [],
-            "suggestions": []
+            "suggestions": [],
         }
 
     async def verify_form_state(
-        self,
-        screenshot_base64: str,
-        expected_state: Dict[str, Any]
+        self, screenshot_base64: str, expected_state: Dict[str, Any]
     ) -> Dict[str, Any]:
         """
         Verify the form is in the expected state
@@ -177,17 +181,21 @@ Respond with JSON:
 
         if expected_state.get("dropdown_selected"):
             for dropdown, value in expected_state["dropdown_selected"].items():
-                queries.append(f"Does the {dropdown} dropdown show '{value}' as selected?")
+                queries.append(
+                    f"Does the {dropdown} dropdown show '{value}' as selected?"
+                )
 
         if expected_state.get("no_errors", True):
-            queries.append("Are there any visible error messages or validation warnings on the form?")
+            queries.append(
+                "Are there any visible error messages or validation warnings on the form?"
+            )
 
         combined_query = "\n".join(f"{i+1}. {q}" for i, q in enumerate(queries))
 
         return await self.verify_screenshot(
             screenshot_base64,
             combined_query,
-            "Verifying form state after filling fields"
+            "Verifying form state after filling fields",
         )
 
 
@@ -207,7 +215,7 @@ class CodeCorrectionAgent:
         screenshot_base64: Optional[str] = None,
         page_html: Optional[str] = None,
         previous_fixes: List[str] = None,
-        dropdown_context: Optional[Dict] = None
+        dropdown_context: Optional[Dict] = None,
     ) -> FixResult:
         """
         Analyze error and generate fixed code
@@ -241,109 +249,120 @@ class CodeCorrectionAgent:
         ]
 
         if previous_fixes:
-            prompt_parts.extend([
-                "",
-                "## PREVIOUS FIX ATTEMPTS (DO NOT REPEAT THESE)",
-                *[f"- {fix}" for fix in previous_fixes]
-            ])
+            prompt_parts.extend(
+                [
+                    "",
+                    "## PREVIOUS FIX ATTEMPTS (DO NOT REPEAT THESE)",
+                    *[f"- {fix}" for fix in previous_fixes],
+                ]
+            )
 
         if dropdown_context:
-            prompt_parts.extend([
-                "",
-                "## KNOWN DROPDOWN OPTIONS",
-                f"```json\n{json.dumps(dropdown_context, indent=2)[:2000]}\n```"
-            ])
+            prompt_parts.extend(
+                [
+                    "",
+                    "## KNOWN DROPDOWN OPTIONS",
+                    f"```json\n{json.dumps(dropdown_context, indent=2)[:2000]}\n```",
+                ]
+            )
 
         if page_html:
             # Truncate HTML to relevant portion
             html_snippet = page_html[:3000] if len(page_html) > 3000 else page_html
-            prompt_parts.extend([
-                "",
-                "## PAGE HTML (truncated)",
-                f"```html\n{html_snippet}\n```"
-            ])
+            prompt_parts.extend(
+                ["", "## PAGE HTML (truncated)", f"```html\n{html_snippet}\n```"]
+            )
 
-        prompt_parts.extend([
-            "",
-            "## YOUR TASK",
-            "1. Analyze why the error occurred",
-            "2. Generate COMPLETE fixed Python code",
-            "3. Explain what you changed and why",
-            "",
-            "## COMMON FIXES",
-            "- TimeoutError: Add more wait time, use different selector, wait for element",
-            "- ElementNotFound: Check selector, element might be in iframe, dynamically loaded",
-            "- Select2/Ant-Design: Use correct interaction pattern for the framework",
-            "- Cascade issues: Wait after parent selection before filling child",
-            "",
-            "## OUTPUT FORMAT",
-            "Respond with:",
-            "1. ANALYSIS: Why the error occurred",
-            "2. CHANGES: List of specific changes made",
-            "3. CODE: Complete fixed Python code in ```python block",
-            "",
-            "IMPORTANT: Output the COMPLETE code, not just the changed parts."
-        ])
+        prompt_parts.extend(
+            [
+                "",
+                "## YOUR TASK",
+                "1. Analyze why the error occurred",
+                "2. Generate COMPLETE fixed Python code",
+                "3. Explain what you changed and why",
+                "",
+                "## COMMON FIXES",
+                "- TimeoutError: Add more wait time, use different selector, wait for element",
+                "- ElementNotFound: Check selector, element might be in iframe, dynamically loaded",
+                "- Select2/Ant-Design: Use correct interaction pattern for the framework",
+                "- Cascade issues: Wait after parent selection before filling child",
+                "",
+                "## OUTPUT FORMAT",
+                "Respond with:",
+                "1. ANALYSIS: Why the error occurred",
+                "2. CHANGES: List of specific changes made",
+                "3. CODE: Complete fixed Python code in ```python block",
+                "",
+                "IMPORTANT: Output the COMPLETE code, not just the changed parts.",
+            ]
+        )
 
         prompt = "\n".join(prompt_parts)
 
         # Include screenshot if available
         messages_content = []
         if screenshot_base64:
-            messages_content.append({
-                "type": "image",
-                "source": {
-                    "type": "base64",
-                    "media_type": "image/png",
-                    "data": screenshot_base64
+            messages_content.append(
+                {
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": "image/png",
+                        "data": screenshot_base64,
+                    },
                 }
-            })
+            )
 
-        messages_content.append({
-            "type": "text",
-            "text": prompt
-        })
+        messages_content.append({"type": "text", "text": prompt})
 
         response = self.client.messages.create(
             model="claude-sonnet-4-5-20250929",
             max_tokens=8000,
-            messages=[{"role": "user", "content": messages_content}]
+            messages=[{"role": "user", "content": messages_content}],
         )
 
         cost = self.cost_tracker.add(
             "claude-sonnet-4-5-20250929",
             response.usage.input_tokens,
-            response.usage.output_tokens
+            response.usage.output_tokens,
         )
 
         text = response.content[0].text
 
         # Extract code from response
-        code_match = re.search(r'```python\s*(.*?)\s*```', text, re.DOTALL)
+        code_match = re.search(r"```python\s*(.*?)\s*```", text, re.DOTALL)
         new_code = code_match.group(1) if code_match else ""
 
         # Extract changes list
         changes = []
-        changes_match = re.search(r'CHANGES?:?\s*(.*?)(?=CODE:|```|$)', text, re.DOTALL | re.IGNORECASE)
+        changes_match = re.search(
+            r"CHANGES?:?\s*(.*?)(?=CODE:|```|$)", text, re.DOTALL | re.IGNORECASE
+        )
         if changes_match:
             changes_text = changes_match.group(1)
-            changes = [line.strip().lstrip('- •') for line in changes_text.split('\n') if line.strip() and line.strip().startswith(('-', '•', '*'))]
+            changes = [
+                line.strip().lstrip("- •")
+                for line in changes_text.split("\n")
+                if line.strip() and line.strip().startswith(("-", "•", "*"))
+            ]
 
         # Extract reasoning
-        analysis_match = re.search(r'ANALYSIS:?\s*(.*?)(?=CHANGES?:|$)', text, re.DOTALL | re.IGNORECASE)
+        analysis_match = re.search(
+            r"ANALYSIS:?\s*(.*?)(?=CHANGES?:|$)", text, re.DOTALL | re.IGNORECASE
+        )
         reasoning = analysis_match.group(1).strip() if analysis_match else ""
 
         # Validate syntax before returning
         if new_code:
             try:
-                compile(new_code, '<string>', 'exec')
+                compile(new_code, "<string>", "exec")
             except SyntaxError as e:
-                logger = __import__('logging').getLogger(__name__)
+                logger = __import__("logging").getLogger(__name__)
                 logger.warning(f"Generated code has syntax error: {e}")
                 # Try to fix common issues
                 new_code = self._fix_common_syntax_errors(new_code)
                 try:
-                    compile(new_code, '<string>', 'exec')
+                    compile(new_code, "<string>", "exec")
                 except SyntaxError:
                     # Still broken, return failure
                     return FixResult(
@@ -351,7 +370,7 @@ class CodeCorrectionAgent:
                         changes_made=["Syntax error in generated code"],
                         reasoning=f"AI generated code with syntax error: {e}",
                         new_code="",
-                        cost=cost
+                        cost=cost,
                     )
 
         return FixResult(
@@ -359,7 +378,7 @@ class CodeCorrectionAgent:
             changes_made=changes,
             reasoning=reasoning,
             new_code=new_code,
-            cost=cost
+            cost=cost,
         )
 
     def _fix_common_syntax_errors(self, code: str) -> str:
@@ -367,7 +386,7 @@ class CodeCorrectionAgent:
         import re
 
         # Fix unclosed strings
-        lines = code.split('\n')
+        lines = code.split("\n")
         fixed_lines = []
 
         for line in lines:
@@ -387,7 +406,7 @@ class CodeCorrectionAgent:
 
             fixed_lines.append(line)
 
-        return '\n'.join(fixed_lines)
+        return "\n".join(fixed_lines)
 
 
 class ScraperValidator:
@@ -402,7 +421,7 @@ class ScraperValidator:
         self,
         max_attempts: int = 3,
         screenshot_dir: str = "screenshots/validation",
-        headless: bool = True
+        headless: bool = True,
     ):
         self.max_attempts = max_attempts
         self.screenshot_dir = Path(screenshot_dir)
@@ -411,8 +430,7 @@ class ScraperValidator:
 
         self.api_key = os.getenv("api_key")
         self.client = anthropic.Anthropic(
-            api_key=self.api_key,
-            base_url="https://ai.megallm.io"
+            api_key=self.api_key, base_url="https://ai.megallm.io"
         )
         self.cost_tracker = CostTracker()
 
@@ -427,7 +445,7 @@ class ScraperValidator:
         scraper_path: str,
         test_data: Dict[str, Any],
         portal_context: Optional[Dict] = None,
-        dry_run: bool = True
+        dry_run: bool = True,
     ) -> Tuple[bool, str, List[ValidationResult]]:
         """
         Validate a scraper with self-healing loop
@@ -461,10 +479,7 @@ class ScraperValidator:
 
             # Run the scraper
             result = await self._run_scraper_test(
-                scraper_path,
-                test_data,
-                attempt,
-                dry_run=dry_run
+                scraper_path, test_data, attempt, dry_run=dry_run
             )
 
             self.validation_history.append(result)
@@ -478,13 +493,17 @@ class ScraperValidator:
                 await self._store_successful_pattern(
                     scraper_path=scraper_path,
                     portal_context=portal_context,
-                    validation_attempts=attempt
+                    validation_attempts=attempt,
                 )
 
                 return True, str(scraper_path), self.validation_history
 
             print(f"❌ Attempt {attempt} failed: {result.error_type}")
-            print(f"   Error: {result.error[:100]}..." if result.error else "   Unknown error")
+            print(
+                f"   Error: {result.error[:100]}..."
+                if result.error
+                else "   Unknown error"
+            )
 
             if attempt < self.max_attempts:
                 # Try to fix the code
@@ -499,7 +518,9 @@ class ScraperValidator:
                     stack_trace=result.stack_trace or "",
                     screenshot_base64=result.screenshot_base64,
                     previous_fixes=previous_fixes,
-                    dropdown_context=portal_context.get("dropdowns") if portal_context else None
+                    dropdown_context=(
+                        portal_context.get("dropdowns") if portal_context else None
+                    ),
                 )
 
                 self.fix_history.append(fix_result)
@@ -527,7 +548,7 @@ class ScraperValidator:
         scraper_path: Path,
         test_data: Dict[str, Any],
         attempt: int,
-        dry_run: bool = True
+        dry_run: bool = True,
     ) -> ValidationResult:
         """Run the scraper and capture results"""
 
@@ -540,6 +561,7 @@ class ScraperValidator:
         try:
             # Import the scraper dynamically
             import importlib.util
+
             spec = importlib.util.spec_from_file_location("scraper", scraper_path)
             scraper_module = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(scraper_module)
@@ -579,7 +601,7 @@ class ScraperValidator:
                 verification = await self.screenshot_verifier.verify_screenshot(
                     result.screenshot_base64,
                     "Are all form fields filled correctly? Are there any visible error messages or validation warnings?",
-                    f"Form was filled with test data. Checking for issues."
+                    f"Form was filled with test data. Checking for issues.",
                 )
 
                 if verification.get("issues_detected"):
@@ -593,12 +615,14 @@ class ScraperValidator:
                     # If not dry_run, we would submit here
                     if not dry_run:
                         # Check if submit method exists
-                        if hasattr(filler, 'submit'):
+                        if hasattr(filler, "submit"):
                             await filler.submit()
 
                             # Take post-submit screenshot
                             await asyncio.sleep(2)
-                            post_screenshot = self.screenshot_dir / f"attempt_{attempt}_submitted.png"
+                            post_screenshot = (
+                                self.screenshot_dir / f"attempt_{attempt}_submitted.png"
+                            )
                             await filler.page.screenshot(path=str(post_screenshot))
 
                     result.success = True
@@ -614,8 +638,10 @@ class ScraperValidator:
 
             # Try to take error screenshot
             try:
-                if 'filler' in locals() and filler.page:
-                    error_screenshot = self.screenshot_dir / f"attempt_{attempt}_error.png"
+                if "filler" in locals() and filler.page:
+                    error_screenshot = (
+                        self.screenshot_dir / f"attempt_{attempt}_error.png"
+                    )
                     await filler.page.screenshot(path=str(error_screenshot))
                     result.screenshot_path = str(error_screenshot)
                     with open(error_screenshot, "rb") as f:
@@ -637,7 +663,7 @@ class ScraperValidator:
         self,
         scraper_path: str,
         test_data: Dict[str, Any],
-        take_screenshots: bool = True
+        take_screenshots: bool = True,
     ) -> Dict[str, Any]:
         """
         Run scraper without submitting - just verify form fills correctly
@@ -655,9 +681,7 @@ class ScraperValidator:
         print(f"{'='*60}\n")
 
         success, final_path, history = await self.validate_scraper(
-            scraper_path=scraper_path,
-            test_data=test_data,
-            dry_run=True
+            scraper_path=scraper_path, test_data=test_data, dry_run=True
         )
 
         report = {
@@ -675,7 +699,7 @@ class ScraperValidator:
                     "screenshot": r.screenshot_path,
                     "fields_filled": r.fields_filled,
                     "validation_errors": r.validation_errors,
-                    "duration": r.duration_seconds
+                    "duration": r.duration_seconds,
                 }
                 for r in history
             ],
@@ -683,10 +707,10 @@ class ScraperValidator:
                 {
                     "changes": f.changes_made,
                     "reasoning": f.reasoning[:200],
-                    "cost": f.cost
+                    "cost": f.cost,
                 }
                 for f in self.fix_history
-            ]
+            ],
         }
 
         return report
@@ -695,7 +719,7 @@ class ScraperValidator:
         self,
         scraper_path: Path,
         portal_context: Optional[Dict],
-        validation_attempts: int
+        validation_attempts: int,
     ):
         """
         Store successful scraper pattern in the pattern library for future reuse.
@@ -707,7 +731,11 @@ class ScraperValidator:
             from knowledge.pattern_library import PatternLibrary
 
             # Extract portal info from context or path
-            portal_name = scraper_path.parent.name if scraper_path.parent.name != "scrapers" else scraper_path.stem
+            portal_name = (
+                scraper_path.parent.name
+                if scraper_path.parent.name != "scrapers"
+                else scraper_path.stem
+            )
             form_url = portal_context.get("url", "") if portal_context else ""
 
             # Build form schema from context
@@ -718,8 +746,14 @@ class ScraperValidator:
                     # Build minimal schema from dropdowns
                     form_schema = {
                         "fields": [
-                            {"name": name, "type": "select", "options": list(info.get("options", {}).keys())}
-                            for name, info in portal_context.get("dropdowns", {}).items()
+                            {
+                                "name": name,
+                                "type": "select",
+                                "options": list(info.get("options", {}).keys()),
+                            }
+                            for name, info in portal_context.get(
+                                "dropdowns", {}
+                            ).items()
                         ]
                     }
 
@@ -743,7 +777,9 @@ class ScraperValidator:
                 generated_code=scraper_code,
                 confidence_score=confidence,
                 validation_attempts=validation_attempts,
-                js_analysis=portal_context.get("js_analysis") if portal_context else None
+                js_analysis=(
+                    portal_context.get("js_analysis") if portal_context else None
+                ),
             )
 
             if success:
@@ -769,7 +805,9 @@ class ScraperValidator:
 
         if self.validation_history:
             last = self.validation_history[-1]
-            lines.append(f"Final status: {'✅ PASSED' if last.success else '❌ FAILED'}")
+            lines.append(
+                f"Final status: {'✅ PASSED' if last.success else '❌ FAILED'}"
+            )
             if not last.success and last.error:
                 lines.append(f"Last error: {last.error[:100]}")
 
@@ -784,7 +822,9 @@ async def main():
     if len(sys.argv) < 2:
         print("Usage: python scraper_validator.py <scraper_path> [--submit]")
         print("\nExample:")
-        print("  python scraper_validator.py scrapers/ranchi_smart/ranchi_smart_scraper.py")
+        print(
+            "  python scraper_validator.py scrapers/ranchi_smart/ranchi_smart_scraper.py"
+        )
         return
 
     scraper_path = sys.argv[1]
@@ -798,18 +838,12 @@ async def main():
         "mobile": "9876543210",
         "email": "test@example.com",
         "address": "123 Test Street, Ranchi",
-        "remarks": "Test complaint for validation"
+        "remarks": "Test complaint for validation",
     }
 
-    validator = ScraperValidator(
-        max_attempts=3,
-        headless=True
-    )
+    validator = ScraperValidator(max_attempts=3, headless=True)
 
-    report = await validator.dry_run(
-        scraper_path=scraper_path,
-        test_data=test_data
-    )
+    report = await validator.dry_run(scraper_path=scraper_path, test_data=test_data)
 
     print(validator.get_summary())
 

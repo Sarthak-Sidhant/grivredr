@@ -3,6 +3,7 @@ Tracking ID Extraction - Extract tracking/reference IDs from success pages
 
 Consolidates the duplicate implementations in human_recorder_agent.py and test_agent.py.
 """
+
 import re
 import logging
 from typing import Optional, List, Dict, Any
@@ -13,20 +14,18 @@ logger = logging.getLogger(__name__)
 # Common patterns for tracking IDs in Indian government portals
 TRACKING_ID_PATTERNS = [
     # Explicit tracking ID labels
-    r'tracking\s*(?:id|no|number)[:\s]*([A-Z0-9\-\/]+)',
-    r'reference\s*(?:id|no|number)[:\s]*([A-Z0-9\-\/]+)',
-    r'complaint\s*(?:id|no|number)[:\s]*([A-Z0-9\-\/]+)',
-    r'registration\s*(?:id|no|number)[:\s]*([A-Z0-9\-\/]+)',
-    r'ticket\s*(?:id|no|number)[:\s]*([A-Z0-9\-\/]+)',
-    r'grievance\s*(?:id|no|number)[:\s]*([A-Z0-9\-\/]+)',
-
+    r"tracking\s*(?:id|no|number)[:\s]*([A-Z0-9\-\/]+)",
+    r"reference\s*(?:id|no|number)[:\s]*([A-Z0-9\-\/]+)",
+    r"complaint\s*(?:id|no|number)[:\s]*([A-Z0-9\-\/]+)",
+    r"registration\s*(?:id|no|number)[:\s]*([A-Z0-9\-\/]+)",
+    r"ticket\s*(?:id|no|number)[:\s]*([A-Z0-9\-\/]+)",
+    r"grievance\s*(?:id|no|number)[:\s]*([A-Z0-9\-\/]+)",
     # Common ID formats
-    r'(?:ID|No|Number)[:\s]+([A-Z]{2,4}[\-\/]?\d{6,12})',  # e.g., GRV-123456
-    r'(?:ID|No|Number)[:\s]+(\d{4}[\-\/]\d{6,8})',  # e.g., 2024/123456
-    r'([A-Z]{2,5}\d{10,15})',  # e.g., CPGRMS2024123456
-
+    r"(?:ID|No|Number)[:\s]+([A-Z]{2,4}[\-\/]?\d{6,12})",  # e.g., GRV-123456
+    r"(?:ID|No|Number)[:\s]+(\d{4}[\-\/]\d{6,8})",  # e.g., 2024/123456
+    r"([A-Z]{2,5}\d{10,15})",  # e.g., CPGRMS2024123456
     # Fallback numeric patterns
-    r'(?:successfully registered|submitted successfully)[.\s]+(?:your|the)?\s*(?:reference|tracking|complaint)?\s*(?:id|no|number)?[:\s]*([A-Z0-9\-\/]+)',
+    r"(?:successfully registered|submitted successfully)[.\s]+(?:your|the)?\s*(?:reference|tracking|complaint)?\s*(?:id|no|number)?[:\s]*([A-Z0-9\-\/]+)",
 ]
 
 
@@ -48,8 +47,13 @@ def extract_tracking_id(text: str, html: Optional[str] = None) -> Optional[str]:
 
     # Check if this looks like a success page
     success_indicators = [
-        'success', 'submitted', 'registered', 'received',
-        'thank you', 'complaint has been', 'reference number'
+        "success",
+        "submitted",
+        "registered",
+        "received",
+        "thank you",
+        "complaint has been",
+        "reference number",
     ]
 
     is_success_page = any(indicator in text_lower for indicator in success_indicators)
@@ -74,8 +78,8 @@ def extract_tracking_id(text: str, html: Optional[str] = None) -> Optional[str]:
         html_patterns = [
             r'<span[^>]*class="[^"]*tracking[^"]*"[^>]*>([^<]+)</span>',
             r'<div[^>]*class="[^"]*reference[^"]*"[^>]*>([^<]+)</div>',
-            r'<strong>([A-Z]{2,4}[\-\/]?\d{6,12})</strong>',
-            r'<b>([A-Z]{2,4}[\-\/]?\d{6,12})</b>',
+            r"<strong>([A-Z]{2,4}[\-\/]?\d{6,12})</strong>",
+            r"<b>([A-Z]{2,4}[\-\/]?\d{6,12})</b>",
         ]
 
         for pattern in html_patterns:
@@ -138,7 +142,7 @@ def validate_tracking_id(tracking_id: str) -> bool:
         return False
 
     # Should be mostly alphanumeric with allowed separators
-    allowed_chars = set('ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-/')
+    allowed_chars = set("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-/")
     if not all(c.upper() in allowed_chars for c in tracking_id):
         return False
 
@@ -159,7 +163,7 @@ def format_tracking_id(tracking_id: str) -> str:
         return ""
 
     # Clean up whitespace
-    formatted = ' '.join(tracking_id.split())
+    formatted = " ".join(tracking_id.split())
 
     # Uppercase
     formatted = formatted.upper()
@@ -182,7 +186,7 @@ def extract_status_from_page(text: str) -> Dict[str, Any]:
         "last_updated": None,
         "remarks": None,
         "officer": None,
-        "department": None
+        "department": None,
     }
 
     text_lower = text.lower()
@@ -202,9 +206,9 @@ def extract_status_from_page(text: str) -> Dict[str, Any]:
 
     # Extract date
     date_patterns = [
-        r'last\s*updated[:\s]*(\d{1,2}[\-\/]\d{1,2}[\-\/]\d{2,4})',
-        r'date[:\s]*(\d{1,2}[\-\/]\d{1,2}[\-\/]\d{2,4})',
-        r'on\s*(\d{1,2}[\-\/]\d{1,2}[\-\/]\d{2,4})',
+        r"last\s*updated[:\s]*(\d{1,2}[\-\/]\d{1,2}[\-\/]\d{2,4})",
+        r"date[:\s]*(\d{1,2}[\-\/]\d{1,2}[\-\/]\d{2,4})",
+        r"on\s*(\d{1,2}[\-\/]\d{1,2}[\-\/]\d{2,4})",
     ]
 
     for pattern in date_patterns:
@@ -215,9 +219,9 @@ def extract_status_from_page(text: str) -> Dict[str, Any]:
 
     # Extract remarks
     remarks_patterns = [
-        r'remarks?[:\s]*(.+?)(?:\n|$)',
-        r'comments?[:\s]*(.+?)(?:\n|$)',
-        r'notes?[:\s]*(.+?)(?:\n|$)',
+        r"remarks?[:\s]*(.+?)(?:\n|$)",
+        r"comments?[:\s]*(.+?)(?:\n|$)",
+        r"notes?[:\s]*(.+?)(?:\n|$)",
     ]
 
     for pattern in remarks_patterns:

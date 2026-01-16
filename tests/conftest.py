@@ -1,20 +1,26 @@
 """
 Pytest configuration and shared fixtures
 """
+
+import os
 import pytest
 import asyncio
 import json
 from pathlib import Path
 from unittest.mock import Mock, MagicMock, patch
 
+# Set dummy API key for testing (before any imports that use ai_client)
+# Use properly formatted MegaLLM key to avoid format validation errors
+os.environ.setdefault("api_key", "sk-mega-test-key-for-testing-only")
+
 # Configure async test support
-pytest_plugins = ('pytest_asyncio',)
+pytest_plugins = ("pytest_asyncio",)
 
 
 @pytest.fixture
 def mock_ai_client():
     """Mock AIClient to avoid real API calls"""
-    with patch('config.ai_client.ai_client') as mock:
+    with patch("config.ai_client.ai_client") as mock:
         # Mock the client.chat.completions.create method
         mock_response = MagicMock()
         mock_response.choices = [MagicMock()]
@@ -30,7 +36,7 @@ def mock_ai_client():
 @pytest.fixture
 def mock_playwright():
     """Mock Playwright browser automation"""
-    with patch('playwright.async_api.async_playwright') as mock:
+    with patch("playwright.async_api.async_playwright") as mock:
         # Create mock browser context
         mock_browser = MagicMock()
         mock_page = MagicMock()
@@ -70,7 +76,7 @@ def sample_form_schema():
                 "type": "text",
                 "selector": "#fullName",
                 "required": True,
-                "placeholder": "Enter your full name"
+                "placeholder": "Enter your full name",
             },
             {
                 "name": "mobile",
@@ -78,14 +84,14 @@ def sample_form_schema():
                 "type": "text",
                 "selector": "#mobile",
                 "required": True,
-                "validation_pattern": "^[0-9]{10}$"
+                "validation_pattern": "^[0-9]{10}$",
             },
             {
                 "name": "email",
                 "label": "Email Address",
                 "type": "text",
                 "selector": "#email",
-                "required": False
+                "required": False,
             },
             {
                 "name": "category",
@@ -93,23 +99,23 @@ def sample_form_schema():
                 "type": "dropdown",
                 "selector": "#category",
                 "required": True,
-                "options": ["Water Supply", "Electricity", "Roads", "Garbage"]
+                "options": ["Water Supply", "Electricity", "Roads", "Garbage"],
             },
             {
                 "name": "description",
                 "label": "Complaint Description",
                 "type": "textarea",
                 "selector": "#description",
-                "required": True
-            }
+                "required": True,
+            },
         ],
         "submit_button": {
             "selector": "button[type='submit']",
-            "text": "Submit Complaint"
+            "text": "Submit Complaint",
         },
         "multi_step": False,
         "requires_captcha": False,
-        "confidence_score": 0.85
+        "confidence_score": 0.85,
     }
 
 
@@ -121,7 +127,7 @@ def sample_test_data():
         "mobile": "9876543210",
         "email": "test@example.com",
         "category": "Water Supply",
-        "description": "This is a test complaint for automated testing."
+        "description": "This is a test complaint for automated testing.",
     }
 
 
@@ -142,8 +148,8 @@ def mock_validation_result_success():
         captured_operations=[
             {"operation": "goto", "url": "https://example.com"},
             {"operation": "fill", "selector": "#fullName", "value": "Test User"},
-            {"operation": "click", "selector": "button[type='submit']"}
-        ]
+            {"operation": "click", "selector": "button[type='submit']"},
+        ],
     )
 
 
@@ -158,13 +164,13 @@ def mock_validation_result_failure():
         execution_status="failed",
         execution_errors=[
             "Element not found: button[type='submit']",
-            "Timeout waiting for page load"
+            "Timeout waiting for page load",
         ],
         schema_errors=["Missing required field: tracking_id"],
         timeout_issues=[],
         warnings=["Detected potential CAPTCHA"],
         execution_time=30.0,
-        captured_operations=[]
+        captured_operations=[],
     )
 
 
@@ -177,12 +183,13 @@ def fixtures_dir():
 @pytest.fixture
 def load_fixture(fixtures_dir):
     """Helper to load JSON fixtures"""
+
     def _load(filename: str):
         fixture_path = fixtures_dir / filename
         if not fixture_path.exists():
             raise FileNotFoundError(f"Fixture not found: {filename}")
 
-        with open(fixture_path, 'r') as f:
+        with open(fixture_path, "r") as f:
             return json.load(f)
 
     return _load
